@@ -44,7 +44,7 @@ def calculate_ear(eye_landmarks):
 
 # --- System Initialization ---
 print("--- 3-Stage Drowsiness Detection System Started ---")
-face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+face_mesh = mp_face_mesh.FaceMesh()
 
 LEFT_EYE = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33, 160, 158, 133, 153, 144]
