@@ -60,7 +60,7 @@ STAGE2_FRAMES = 60  # Approx. 3 sec -> Stage 2 (Vibration)
 counter = 0
 current_stage = 0 
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
 
 # --- Main Loop ---
 try:
