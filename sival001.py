@@ -21,7 +21,7 @@ def send_uart_command(stage):
         
     # 시작문자 '!' , 끝문자 '#' 규격에 맞춘 패킷 생성
     if stage == 0:
-        command = "!ALL_OFF#\n"
+        command = "!VIB_OFF#\n"
     elif stage == 1:
         command = "!BUZ_ON#\n"
     elif stage == 2:
