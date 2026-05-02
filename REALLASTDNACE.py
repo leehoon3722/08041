@@ -51,8 +51,8 @@ def uart_thread():
         if ser:
             # --- 1. 졸음 상태 변경 시 명령 전송 ---
             if current_stage != last_sent_stage:
-                cmd_map = {0: "!OFF#", 1: "!LV1_WARN#", 2: "!LV2_DANGER#"}
-                cmd = cmd_map.get(current_stage, "!OFF#")
+                cmd_map = {0: "!OFF\n#", 1: "!LV1_WARN\n#", 2: "!LV2_DANGER\n#"}
+                cmd = cmd_map.get(current_stage, "!OFF\n#")
                 with lock:
                     try:
                         ser.write(cmd.encode())
@@ -65,7 +65,7 @@ def uart_thread():
             if curr_time - last_heartbeat_time >= 1.0:
                 with lock:
                     try:
-                        ser.write(b'H')
+                        ser.write(b'H\n')
                     except: pass
                 last_heartbeat_time = curr_time
             
