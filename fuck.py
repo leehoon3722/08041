@@ -34,7 +34,7 @@ class WebcamStream:
 
 # --- 2. UART 통신 설정 ---
 try:
-    ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
+    ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=1)
 except:
     ser = None
 
