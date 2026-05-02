@@ -132,7 +132,7 @@ def main():
                             # 눈을 감고 있는 지속 시간 계산
                             closed_duration = time.time() - eye_closed_start_time
                             
-                            if closed_duration >= 5.0:      # 5초 이상: DANGER (2단계)
+                            if closed_duration >= 10.0:      # 5초 이상: DANGER (2단계)
                                 current_stage = 2
                             elif closed_duration >= 2.0:    # 2초 이상: WARNING (1단계)
                                 current_stage = 1
@@ -154,7 +154,7 @@ def main():
         is_running = False
         vs.stop()
         if ser:
-            ser.write("!OFF#".encode())
+            ser.write("!OFF_SAFE#".encode())
             ser.close()
         cv2.destroyAllWindows()
 
