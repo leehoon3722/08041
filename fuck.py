@@ -1,87 +1,64 @@
 import cv2
-import mediapipe as mp
+import dlib
 import numpy as np
 from scipy.spatial import distance as dist
 
-def gstreamer_pipeline(cap_w=1280, cap_h=720, disp_w=640, disp_h=360, fps=30, flip=0):
-    return (
-        "nvarguscamerasrc ! "
-        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! "
-        "nvvidconv flip-method=%d ! "
-        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
-        "videoconvert ! "
-        "video/x-raw, format=(string)BGR ! appsink"
-        % (cap_w, cap_h, fps, flip, disp_w, disp_h)
-    )
+def calculate_ear(eye):
+    A = dist.euclidean(eye[1], eye[5])
+    B = dist.euclidean(eye[2], eye[4])
+    C = dist.euclidean(eye[0], eye[3])
+    ear = (A + B) / (2.0 * C)
+    return ear
 
-def calculate_ear(eye_landmarks):
-    v1 = dist.euclidean(eye_landmarks[1], eye_landmarks[5])
-    v2 = dist.euclidean(eye_landmarks[2], eye_landmarks[4])
-    h = dist.euclidean(eye_landmarks[0], eye_landmarks[3])
-    return (v1 + v2) / (2.0 * h)
+EAR_THRESHOLD = 0.23
+EAR_CONSEC_FRAMES = 15
 
-print("--- System Starting ---")
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    max_num_faces=1,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5)
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 
-LEFT_EYE = [362, 385, 387, 263, 373, 380]
-RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+(lStart, lEnd) = (42, 48)
+(rStart, rEnd) = (36, 42)
 
-CALIBRATION_FRAMES = 50
-calibration_data = []
-EAR_THRESHOLD = 0.0
-is_calibrated = False
-CLOSED_FRAMES = 20
+cap = cv2.VideoCapture(0)
 counter = 0
 
-# For CSI Camera use gstreamer_pipeline(), for USB use 0
-cap = cv2.VideoCapture(gstreamer_pipeline(), cv2.CAP_GSTREAMER)
-
-while cap.isOpened():
+while True:
     ret, frame = cap.read()
-    if not ret: break
+    if not ret:
+        break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
-    rgb_frame = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+    rects = detector(gray, 0)
+
+    for rect in rects:
+        shape = predictor(gray, rect)
+        shape = np.array([[p.x, p.y] for p in shape.parts()])
+
+        leftEye = shape[lStart:lEnd]
+        rightEye = shape[rStart:rEnd]
+        
+        leftEAR = calculate_ear(leftEye)
+        rightEAR = calculate_ear(rightEye)
+        ear = (leftEAR + rightEAR) / 2.0
+
+        leftEyeHull = cv2.convexHull(leftEye)
+        rightEyeHull = cv2.convexHull(rightEye)
+        cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 1)
+        cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
+
+        if ear < EAR_THRESHOLD:
+            counter += 1
+            if counter >= EAR_CONSEC_FRAMES:
+                cv2.putText(frame, "!!! DROWSINESS ALERT !!!", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            counter = 0
+
+        cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+    cv2.imshow("Night Vision Drowsiness Detect", frame)
     
-    results = face_mesh.process(rgb_frame)
-    img_h, img_w, _ = frame.shape
-
-    if results.multi_face_landmarks:
-        for face_landmarks in results.multi_face_landmarks:
-            landmarks = face_landmarks.landmark
-            l_pts = np.array([(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in LEFT_EYE])
-            r_pts = np.array([(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in RIGHT_EYE])
-            
-            avg_ear = (calculate_ear(l_pts) + calculate_ear(r_pts)) / 2.0
-            
-            if not is_calibrated:
-                calibration_data.append(avg_ear)
-                cv2.putText(frame, "Calibrating... Look Straight", (30, 100), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                
-                if len(calibration_data) >= CALIBRATION_FRAMES:
-                    EAR_THRESHOLD = (sum(calibration_data) / len(calibration_data)) * 0.75
-                    is_calibrated = True
-                    print("Calibration Done! Threshold: {:.3f}".format(EAR_THRESHOLD))
-            else:
-                if avg_ear < EAR_THRESHOLD:
-                    counter += 1
-                    if counter >= CLOSED_FRAMES:
-                        cv2.putText(frame, "WARNING! DROWSINESS DETECTED!", (30, 150), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                else:
-                    counter = 0
-            
-            cv2.putText(frame, "EAR: {:.2f} (TH: {:.2f})".format(avg_ear, EAR_THRESHOLD), 
-                        (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-    cv2.imshow('Drowsiness Detection', frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
