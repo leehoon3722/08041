@@ -17,10 +17,10 @@ def gstreamer_pipeline(sensor_id=0, capture_width=1280, capture_height=720, disp
 
 def calculate_ear(eye):
     A = dist.euclidean(eye[1], eye[5])
-    B = dist.euclidean(eye[2], right_eye_5 := eye[5]) # dummy var for spacing
     B = dist.euclidean(eye[2], eye[4])
     C = dist.euclidean(eye[0], eye[3])
-    return (A + B) / (2.0 * C)
+    ear = (A + B) / (2.0 * C)
+    return ear
 
 EAR_THRESHOLD = 0.23
 EAR_CONSEC_FRAMES = 15
@@ -34,7 +34,7 @@ predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0), cv2.CAP_GSTREAMER)
 
 if not cap.isOpened():
-    print("Error: Could not open camera. Check connection or restart daemon.")
+    print("카메라 연결 실패")
     sys.exit()
 
 counter = 0
@@ -42,7 +42,6 @@ counter = 0
 while True:
     ret, frame = cap.read()
     if not ret:
-        print("Error: Failed to capture image.")
         break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -59,11 +58,13 @@ while True:
         if ear < EAR_THRESHOLD:
             counter += 1
             if counter >= EAR_CONSEC_FRAMES:
-                cv2.putText(frame, "DROWSINESS ALERT!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(frame, "DROWSINESS ALERT!", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
             counter = 0
 
-        cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
     cv2.imshow("CSI Camera EAR", frame)
     
