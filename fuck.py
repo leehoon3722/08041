@@ -34,7 +34,7 @@ predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
 cap = cv2.VideoCapture(gstreamer_pipeline(sensor_id=0), cv2.CAP_GSTREAMER)
 
 if not cap.isOpened():
-    print("카메라 연결 실패")
+    print("Error: Unable to open camera.")
     sys.exit()
 
 counter = 0
@@ -42,6 +42,7 @@ counter = 0
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("Error: Frame capture failed.")
         break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -66,7 +67,7 @@ while True:
         cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
-    cv2.imshow("CSI Camera EAR", frame)
+    cv2.imshow("Jetson Nano EAR Monitor", frame)
     
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
