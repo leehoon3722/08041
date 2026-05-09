@@ -11,20 +11,15 @@ import sys
 def check_opencv_gstreamer():
     build_info = cv2.getBuildInformation()
     if "GStreamer" in build_info and "YES" in build_info.split("GStreamer")[1].split("\n")[0]:
-        print("✅ OpenCV가 GStreamer를 지원합니다! (정상)")
+        pass 
     else:
-        print("\n🚨 [치명적 오류] 현재 설치된 OpenCV가 GStreamer를 지원하지 않습니다!")
+        print("\n🚨 [치명적 오류] OpenCV가 GStreamer를 지원하지 않습니다!")
         sys.exit(1)
 
-# --- 1. CSI 카메라 파이프라인 생성 함수 (표준형) ---
+# --- 1. CSI 카메라 파이프라인 ---
 def gstreamer_pipeline(
-    sensor_id=0,
-    capture_width=1280,
-    capture_height=720,
-    display_width=640,
-    display_height=480,
-    framerate=30,
-    flip_method=0,
+    sensor_id=0, capture_width=1280, capture_height=720,
+    display_width=640, display_height=480, framerate=30, flip_method=0,
 ):
     return (
         "nvarguscamerasrc sensor-id=%d ! "
@@ -33,27 +28,16 @@ def gstreamer_pipeline(
         "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
         "videoconvert ! "
         "video/x-raw, format=(string)BGR ! appsink drop=True"
-        % (
-            sensor_id,
-            capture_width,
-            capture_height,
-            framerate,
-            flip_method,
-            display_width,
-            display_height,
-        )
+        % (sensor_id, capture_width, capture_height, framerate, flip_method, display_width, display_height)
     )
 
-# --- 2. CSI 카메라 캡처 스레드 ---
 class CSICameraStream:
     def __init__(self):
         pipeline = gstreamer_pipeline(flip_method=0)
         self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        
         if not self.stream.isOpened():
-            print("\n❌ 에러: 파이프라인 문법 오류이거나 데몬이 응답하지 않습니다.")
+            print("\n❌ 에러: 카메라를 열 수 없습니다.")
             sys.exit(1) 
-            
         (self.grabbed, self.frame) = self.stream.read()
         self.stopped = False
 
@@ -76,66 +60,89 @@ class CSICameraStream:
         if self.stream.isOpened():
             self.stream.release()
 
-# --- 3. UART 통신 설정 ---
+# --- 2. UART 통신 스레드 (ESP32 프로토콜 완벽 동기화) ---
 try:
     ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
-except:
+    print("✅ UART 통신 연결 성공")
+except Exception as e:
     ser = None
+    print(f"🚨 UART 연결 실패 (시뮬레이션 모드로 작동): {e}")
 
-current_stage = 0 
+target_state = "OFF"
 is_running = True
 lock = threading.Lock()
 
 def uart_thread():
-    global current_stage, is_running
-    last_sent_stage = -1
+    global target_state, is_running
+    current_state = "OFF"
     last_heartbeat_time = time.time()
-    
-    while is_running:
-        if ser:
-            if current_stage != last_sent_stage:
-                cmd_map = {0: "!OFF#", 1: "!LV1_WARN#", 2: "!LV2_DANGER#"}
-                cmd = cmd_map.get(current_stage, "!OFF#")
-                with lock:
-                    try:
-                        ser.write(cmd.encode())
-                        print(f">> SEND STATUS: {cmd}")
-                    except: pass
-                last_sent_stage = current_stage
-            
-            curr_time = time.time()
-            if curr_time - last_heartbeat_time >= 1.0:
-                with lock:
-                    try:
-                        ser.write(b'H')
-                    except: pass
-                last_heartbeat_time = curr_time
-            
+
+    def send_command(cmd_text):
+        """명령어 전송 및 ESP32의 'A\n' 응답 대기"""
+        full_packet = f"!{cmd_text}#\n"
+        retry_count = 0
+        
+        while is_running and retry_count < 10: # 최대 10번 재시도
+            if not ser: break
             try:
+                ser.reset_input_buffer() # 이전의 쓰레기 응답값 비우기
+                ser.write(full_packet.encode())
+                print(f">> 상태 전송: {full_packet.strip()}")
+                
+                time.sleep(0.1) # ESP32가 처리하고 응답할 시간 제공
                 if ser.in_waiting > 0:
-                    response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-            except: 
-                pass
+                    res = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if res == "A": 
+                        print(f"✅ 수신 확인 완료 (ACK)")
+                        break
+            except Exception as e:
+                print(f"통신 에러: {e}")
+            
+            retry_count += 1
+            time.sleep(0.1)
+
+    while is_running:
+        with lock:
+            cmd_to_send = target_state
+        
+        # 1. 메인 루프에서 상태가 변했을 때만 ESP32로 전송
+        if cmd_to_send != current_state:
+            send_command(cmd_to_send)
+            current_state = cmd_to_send
+            
+        # 2. 하트비트 전송 (상태 변화가 없을 때 1초마다)
+        # ESP32 코드에 맞춰 하트비트도 !H#\n 규격으로 전송
+        curr_time = time.time()
+        if curr_time - last_heartbeat_time >= 1.0:
+            if ser and current_state == cmd_to_send:
+                try:
+                    ser.write(b"!H#\n")
+                    time.sleep(0.05)
+                    # 하트비트에 대한 ESP32의 'A' 응답 버퍼에서 비워주기
+                    if ser.in_waiting > 0:
+                        ser.readline() 
+                except: pass
+            last_heartbeat_time = curr_time
+            
         time.sleep(0.1)
 
-# --- 4. 유틸리티 ---
+# --- 3. 유틸리티 (눈 크기 계산) ---
 def calculate_ear(eye_pts):
     v1 = dist.euclidean(eye_pts[1], eye_pts[5])
     v2 = dist.euclidean(eye_pts[2], eye_pts[4])
     h = dist.euclidean(eye_pts[0], eye_pts[3])
     return (v1 + v2) / (2.0 * h) if h != 0 else 0
 
-# --- 5. 메인 실행부 ---
+# --- 4. 메인 카메라 루프 ---
 def main():
-    global current_stage, is_running
+    global target_state, is_running
     check_opencv_gstreamer()
     
     vs = CSICameraStream().start()
     time.sleep(2.0) 
     
-    # 💡 수정 포인트 1: 최대 인식 얼굴 수를 늘려줍니다 (뒤에 있는 사람까지 일단 다 찾기 위해)
     face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=5, 
+        max_num_faces=5, # 뒤 사람 포함 다중 탐지
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
@@ -144,12 +151,10 @@ def main():
     RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 
     prev_time = time.time()
-    
     calibration_data = []
     ear_threshold = 0
     is_calibrated = False
     calib_duration = 5.0
-    calibration_started = False
     calib_start_time = 0
     
     eye_closed_start_time = 0 
@@ -176,32 +181,28 @@ def main():
             if results.multi_face_landmarks:
                 face_missing_start_time = 0 
 
-                # 💡 수정 포인트 2: 감지된 얼굴들 중 "가장 면적이 넓은 얼굴(가장 앞에 있는 사람)" 1개만 찾기
+                # 가장 크기가 큰 얼굴(맨 앞사람) 찾기
                 largest_face = None
                 max_area = 0
 
                 for face_lms in results.multi_face_landmarks:
-                    # 얼굴 랜드마크의 x, y 최소/최대값을 구해 얼굴이 차지하는 박스 크기를 계산합니다.
                     xs = [lm.x for lm in face_lms.landmark]
                     ys = [lm.y for lm in face_lms.landmark]
                     area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-
                     if area > max_area:
                         max_area = area
                         largest_face = face_lms
 
-                # 💡 수정 포인트 3: 찾은 '제일 큰 얼굴' 1개에 대해서만 졸음 알고리즘 적용
                 if largest_face:
                     lms = largest_face.landmark
                     left_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in LEFT_EYE])
                     right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
                     avg_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
+                    # 캘리브레이션
                     if not is_calibrated:
-                        if not calibration_started:
-                            calibration_started = True
+                        if calib_start_time == 0:
                             calib_start_time = time.time()
-                            
                         elapsed = time.time() - calib_start_time
                         if elapsed < calib_duration:
                             calibration_data.append(avg_ear)
@@ -210,38 +211,38 @@ def main():
                             if len(calibration_data) > 0:
                                 ear_threshold = (sum(calibration_data) / len(calibration_data)) * 0.75
                                 is_calibrated = True
+                    # 본격적인 졸음 판별
                     else:
-                        if avg_ear < ear_threshold:
+                        if avg_ear < ear_threshold: # 눈을 감음
                             if eye_closed_start_time == 0:
                                 eye_closed_start_time = time.time()
                             
                             closed_duration = time.time() - eye_closed_start_time
                             
-                            if closed_duration >= 10.0:      
-                                current_stage = 2
-                            elif closed_duration >= 2.0:     
-                                current_stage = 1
+                            # 기준 시간에 따른 상태 업데이트
+                            if closed_duration >= 2.0:
+                                with lock: target_state = "LV2_DANGER"
+                            elif closed_duration >= 0.5:
+                                with lock: target_state = "LV1_WARN"
                             else:
-                                current_stage = 0            
-                        else:
+                                with lock: target_state = "OFF"
+                        else: # 눈을 뜸
                             eye_closed_start_time = 0
-                            current_stage = 0
+                            with lock: target_state = "OFF"
 
-                        status_list = [("NORMAL", (0, 255, 0)), ("WARNING", (0, 165, 255)), ("DANGER", (0, 0, 255))]
-                        text, color = status_list[current_stage]
-                        cv2.putText(frame, text, (30, 90), 1, 3, color, 3)
+                        # 화면에 현재 상태 표시
+                        color_map = {"OFF": (0, 255, 0), "LV1_WARN": (0, 165, 255), "LV2_DANGER": (0, 0, 255)}
+                        cv2.putText(frame, target_state, (30, 90), 1, 3, color_map.get(target_state, (255, 255, 255)), 3)
 
             else:
                 eye_closed_start_time = 0 
-                
                 if is_calibrated:
                     if face_missing_start_time == 0:
                         face_missing_start_time = time.time()
-                        
                     missing_duration = time.time() - face_missing_start_time
                     
                     if missing_duration >= 5.0:
-                        current_stage = 2 
+                        with lock: target_state = "LV2_DANGER"
                         cv2.putText(frame, "NO FACE - DANGER!", (30, 90), 1, 3, (0, 0, 255), 3)
                     else:
                         cv2.putText(frame, f"FACE MISSING... {int(5.0 - missing_duration)}s", (30, 90), 1, 2, (0, 165, 255), 2)
@@ -258,12 +259,12 @@ def main():
         is_running = False
         vs.stop()
         if ser:
-            ser.write("!OFF#".encode())
+            ser.write("!OFF#\n".encode())
             ser.close()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    print("--- 젯슨 나노 CSI IR 카메라 모드 시작 ---")
+    print("--- 젯슨 나노 졸음 감지 시스템 시작 ---")
     t_uart = threading.Thread(target=uart_thread)
     t_uart.start()
     main()
