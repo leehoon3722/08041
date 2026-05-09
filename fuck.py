@@ -5,8 +5,9 @@ from scipy.spatial import distance as dist
 import serial
 import time
 import threading
+import sys
 
-# --- 1. CSI 카메라 파이프라인 생성 함수 ---
+# --- 1. CSI 카메라 파이프라인 생성 함수 (NV12 포맷 추가 완료) ---
 def gstreamer_pipeline(
     sensor_id=0,
     capture_width=1280,
@@ -16,9 +17,10 @@ def gstreamer_pipeline(
     framerate=30,
     flip_method=0,
 ):
+    # format=(string)NV12 옵션이 반드시 들어가야 IMX219 카메라가 정상 작동합니다.
     return (
         "nvarguscamerasrc sensor-id=%d ! "
-        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! "
         "nvvidconv flip-method=%d ! "
         "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
         "videoconvert ! "
@@ -37,13 +39,15 @@ def gstreamer_pipeline(
 # --- 2. CSI 카메라 캡처 스레드 ---
 class CSICameraStream:
     def __init__(self):
-        # 파이프라인 적용 (화면이 뒤집혀 나오면 flip_method=2 로 변경)
+        # 화면이 위아래로 뒤집혀 나온다면 flip_method=2 로 변경하세요.
         pipeline = gstreamer_pipeline(flip_method=0)
         self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         
         if not self.stream.isOpened():
-            print("❌ 에러: CSI 카메라를 열 수 없습니다.")
-            print("터미널에서 'sudo systemctl restart nvargus-daemon'을 입력해 카메라 데몬을 재시작해보세요.")
+            print("\n❌ [치명적 오류] CSI 카메라를 열 수 없습니다!")
+            print("1. GStreamer 파이프라인이 거부되었거나 카메라가 다른 프로그램에서 사용 중입니다.")
+            print("2. 카메라 리본 케이블이 파란색 테이프 쪽을 바깥으로 향하게 잘 꽂혔는지 확인하세요.")
+            sys.exit(1) # 무한 로딩에 빠지지 않도록 프로그램 즉시 종료
             
         (self.grabbed, self.frame) = self.stream.read()
         self.stopped = False
@@ -64,13 +68,15 @@ class CSICameraStream:
 
     def stop(self):
         self.stopped = True
-        self.stream.release()
+        if self.stream.isOpened():
+            self.stream.release()
 
 # --- 3. UART 통신 설정 ---
 try:
     ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
 except:
     ser = None
+    print("⚠️ UART 포트를 열 수 없습니다. 시리얼 통신 없이 작동합니다.")
 
 current_stage = 0 
 is_running = True
@@ -104,9 +110,6 @@ def uart_thread():
             try:
                 if ser.in_waiting > 0:
                     response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-                    if 'A' in response:
-                        pass # 통신 정상 출력은 로그가 너무 길어지므로 생략가능 (필요시 활성화)
-                        # print("✅ Received: A (통신 정상!)") 
             except: 
                 pass
 
@@ -124,9 +127,8 @@ def main():
     global current_stage, is_running
     
     vs = CSICameraStream().start()
-    time.sleep(2.0) 
+    time.sleep(2.0) # 카메라 초기화 대기
     
-    # [수정됨] refine_landmarks 옵션 완벽 제거 (젯슨 호환성)
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
         min_detection_confidence=0.5,
@@ -151,7 +153,10 @@ def main():
     try:
         while True:
             frame = vs.read()
-            if frame is None: continue
+            # 프레임이 안 들어오면 무한 루프 돌지 않고 잠깐 대기
+            if frame is None: 
+                time.sleep(0.1)
+                continue
 
             curr_time = time.time()
             fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
