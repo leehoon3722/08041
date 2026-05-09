@@ -7,7 +7,19 @@ import time
 import threading
 import sys
 
-# --- 1. CSI 카메라 파이프라인 생성 함수 (NV12 포맷 추가 완료) ---
+# --- 0. OpenCV GStreamer 지원 여부 확인 ---
+def check_opencv_gstreamer():
+    build_info = cv2.getBuildInformation()
+    if "GStreamer" in build_info and "YES" in build_info.split("GStreamer")[1].split("\n")[0]:
+        print("✅ OpenCV가 GStreamer를 지원합니다! (정상)")
+    else:
+        print("\n🚨 [치명적 오류] 현재 설치된 OpenCV가 GStreamer를 지원하지 않습니다!")
+        print("💡 해결 방법: 터미널을 열고 아래 명령어를 입력해 pip로 설치된 잘못된 버전을 지우세요.")
+        print("   명령어: pip3 uninstall opencv-python")
+        print("   (삭제 후 다시 실행하면 젯슨 나노에 기본 내장된 정품 OpenCV가 작동합니다.)\n")
+        sys.exit(1)
+
+# --- 1. CSI 카메라 파이프라인 생성 함수 (표준형) ---
 def gstreamer_pipeline(
     sensor_id=0,
     capture_width=1280,
@@ -17,10 +29,9 @@ def gstreamer_pipeline(
     framerate=30,
     flip_method=0,
 ):
-    # format=(string)NV12 옵션이 반드시 들어가야 IMX219 카메라가 정상 작동합니다.
     return (
         "nvarguscamerasrc sensor-id=%d ! "
-        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! "
+        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
         "nvvidconv flip-method=%d ! "
         "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
         "videoconvert ! "
@@ -41,13 +52,14 @@ class CSICameraStream:
     def __init__(self):
         # 화면이 위아래로 뒤집혀 나온다면 flip_method=2 로 변경하세요.
         pipeline = gstreamer_pipeline(flip_method=0)
+        
+        # GStreamer 백엔드 명시적 지정
         self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         
         if not self.stream.isOpened():
-            print("\n❌ [치명적 오류] CSI 카메라를 열 수 없습니다!")
-            print("1. GStreamer 파이프라인이 거부되었거나 카메라가 다른 프로그램에서 사용 중입니다.")
-            print("2. 카메라 리본 케이블이 파란색 테이프 쪽을 바깥으로 향하게 잘 꽂혔는지 확인하세요.")
-            sys.exit(1) # 무한 로딩에 빠지지 않도록 프로그램 즉시 종료
+            print("\n❌ 에러: 파이프라인 문법 오류이거나 데몬이 응답하지 않습니다.")
+            print("터미널에 'sudo systemctl restart nvargus-daemon' 입력 후 다시 시도해보세요.")
+            sys.exit(1) 
             
         (self.grabbed, self.frame) = self.stream.read()
         self.stopped = False
@@ -76,7 +88,6 @@ try:
     ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
 except:
     ser = None
-    print("⚠️ UART 포트를 열 수 없습니다. 시리얼 통신 없이 작동합니다.")
 
 current_stage = 0 
 is_running = True
@@ -112,7 +123,6 @@ def uart_thread():
                     response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
             except: 
                 pass
-
         time.sleep(0.1)
 
 # --- 4. 유틸리티 ---
@@ -126,8 +136,11 @@ def calculate_ear(eye_pts):
 def main():
     global current_stage, is_running
     
+    # 젯슨 GStreamer 지원 상태 검증
+    check_opencv_gstreamer()
+    
     vs = CSICameraStream().start()
-    time.sleep(2.0) # 카메라 초기화 대기
+    time.sleep(2.0) 
     
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
@@ -153,7 +166,6 @@ def main():
     try:
         while True:
             frame = vs.read()
-            # 프레임이 안 들어오면 무한 루프 돌지 않고 잠깐 대기
             if frame is None: 
                 time.sleep(0.1)
                 continue
