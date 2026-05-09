@@ -6,23 +6,44 @@ import serial
 import time
 import threading
 
-# --- 1. CSI 카메라 캡처 스레드 (GStreamer 사용) ---
+# --- 1. CSI 카메라 파이프라인 생성 함수 ---
+def gstreamer_pipeline(
+    sensor_id=0,
+    capture_width=1280,
+    capture_height=720,
+    display_width=640,
+    display_height=480,
+    framerate=30,
+    flip_method=0,
+):
+    return (
+        "nvarguscamerasrc sensor-id=%d ! "
+        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+        "nvvidconv flip-method=%d ! "
+        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+        "videoconvert ! "
+        "video/x-raw, format=(string)BGR ! appsink drop=True"
+        % (
+            sensor_id,
+            capture_width,
+            capture_height,
+            framerate,
+            flip_method,
+            display_width,
+            display_height,
+        )
+    )
+
+# --- 2. CSI 카메라 캡처 스레드 ---
 class CSICameraStream:
     def __init__(self):
-        # 젯슨 나노 CSI 카메라용 GStreamer 파이프라인
-        # 화면이 거꾸로 나온다면 flip-method=0을 flip-method=2 로 변경하세요.
-        pipeline = (
-            "nvarguscamerasrc ! "
-            "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
-            "nvvidconv flip-method=0 ! "
-            "video/x-raw, width=(int)640, height=(int)480, format=(string)BGRx ! "
-            "videoconvert ! "
-            "video/x-raw, format=(string)BGR ! appsink drop=True"
-        )
+        # 파이프라인 적용 (화면이 뒤집혀 나오면 flip_method=2 로 변경)
+        pipeline = gstreamer_pipeline(flip_method=0)
         self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         
         if not self.stream.isOpened():
-            print("❌ 에러: CSI 카메라를 열 수 없습니다. 케이블 연결을 확인하세요.")
+            print("❌ 에러: CSI 카메라를 열 수 없습니다.")
+            print("터미널에서 'sudo systemctl restart nvargus-daemon'을 입력해 카메라 데몬을 재시작해보세요.")
             
         (self.grabbed, self.frame) = self.stream.read()
         self.stopped = False
@@ -45,7 +66,7 @@ class CSICameraStream:
         self.stopped = True
         self.stream.release()
 
-# --- 2. UART 통신 설정 ---
+# --- 3. UART 통신 설정 ---
 try:
     ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
 except:
@@ -62,7 +83,6 @@ def uart_thread():
     
     while is_running:
         if ser:
-            # --- 1. 졸음/이탈 상태 변경 시 명령 전송 ---
             if current_stage != last_sent_stage:
                 cmd_map = {0: "!OFF#", 1: "!LV1_WARN#", 2: "!LV2_DANGER#"}
                 cmd = cmd_map.get(current_stage, "!OFF#")
@@ -73,7 +93,6 @@ def uart_thread():
                     except: pass
                 last_sent_stage = current_stage
             
-            # --- 2. 하트비트 전송 (1초 간격) ---
             curr_time = time.time()
             if curr_time - last_heartbeat_time >= 1.0:
                 with lock:
@@ -82,34 +101,32 @@ def uart_thread():
                     except: pass
                 last_heartbeat_time = curr_time
             
-            # --- 3. 하트비트 응답 확인 (수신 버퍼 체크) ---
             try:
                 if ser.in_waiting > 0:
                     response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
                     if 'A' in response:
-                        print("✅ Received: A (통신 정상!)")
-                    elif response.strip():
-                        print(f"❌ Unknown Response (받은 데이터: {response.strip()})")
+                        pass # 통신 정상 출력은 로그가 너무 길어지므로 생략가능 (필요시 활성화)
+                        # print("✅ Received: A (통신 정상!)") 
             except: 
                 pass
 
         time.sleep(0.1)
 
-# --- 3. 유틸리티 ---
+# --- 4. 유틸리티 ---
 def calculate_ear(eye_pts):
     v1 = dist.euclidean(eye_pts[1], eye_pts[5])
     v2 = dist.euclidean(eye_pts[2], eye_pts[4])
     h = dist.euclidean(eye_pts[0], eye_pts[3])
     return (v1 + v2) / (2.0 * h) if h != 0 else 0
 
-# --- 4. 메인 실행부 ---
+# --- 5. 메인 실행부 ---
 def main():
     global current_stage, is_running
     
-    # USB 웹캠(WebcamStream) 대신 CSI 카메라(CSICameraStream) 실행
     vs = CSICameraStream().start()
-    time.sleep(2.0) # 카메라 예열 시간 약간 증가
+    time.sleep(2.0) 
     
+    # [수정됨] refine_landmarks 옵션 완벽 제거 (젯슨 호환성)
     face_mesh = mp_face_mesh.FaceMesh(
         max_num_faces=1,
         min_detection_confidence=0.5,
