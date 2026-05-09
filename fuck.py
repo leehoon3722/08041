@@ -1,53 +1,228 @@
 import cv2
+import numpy as np
+import mediapipe.python.solutions.face_mesh as mp_face_mesh
+from scipy.spatial import distance as dist
+import serial
+import time
+import threading
 
-def gstreamer_pipeline(
-    sensor_id=0,
-    capture_width=640,
-    capture_height=480,
-    display_width=1280,
-    display_height=720,
-    framerate=30,
-    flip_method=0,
-):
-    # 1. 문자열 내의 (int), (fraction) 등의 표현이 간혹 문제를 일으킬 수 있어 표준 형식으로 수정했습니다.
-    # 2. appsink에 drop=True를 추가하여 버퍼가 쌓여서 멈추는 현상을 방지했습니다.
-    return (
-        "nvarguscamerasrc sensor-id=%d ! "
-        "video/x-raw(memory:NVMM), width=%d, height=%d, format=NV12, framerate=%d/1 ! "
-        "nvvidconv flip-method=%d ! "
-        "video/x-raw, width=%d, height=%d, format=BGRx ! "
-        "videoconvert ! "
-        "video/x-raw, format=BGR ! appsink drop=True"
-        % (
-            sensor_id,
-            capture_width,
-            capture_height,
-            framerate,
-            flip_method,
-            display_width,
-            display_height,
+# --- 1. CSI 카메라 캡처 스레드 (GStreamer 사용) ---
+class CSICameraStream:
+    def __init__(self):
+        # 젯슨 나노 CSI 카메라용 GStreamer 파이프라인
+        # 화면이 거꾸로 나온다면 flip-method=0을 flip-method=2 로 변경하세요.
+        pipeline = (
+            "nvarguscamerasrc ! "
+            "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
+            "nvvidconv flip-method=0 ! "
+            "video/x-raw, width=(int)640, height=(int)480, format=(string)BGRx ! "
+            "videoconvert ! "
+            "video/x-raw, format=(string)BGR ! appsink drop=True"
         )
+        self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        
+        if not self.stream.isOpened():
+            print("❌ 에러: CSI 카메라를 열 수 없습니다. 케이블 연결을 확인하세요.")
+            
+        (self.grabbed, self.frame) = self.stream.read()
+        self.stopped = False
+
+    def start(self):
+        t = threading.Thread(target=self.update, args=())
+        t.daemon = True
+        t.start()
+        return self
+
+    def update(self):
+        while not self.stopped:
+            if self.stream.isOpened():
+                (self.grabbed, self.frame) = self.stream.read()
+
+    def read(self):
+        return self.frame
+
+    def stop(self):
+        self.stopped = True
+        self.stream.release()
+
+# --- 2. UART 통신 설정 ---
+try:
+    ser = serial.Serial('/dev/ttyTHS1', 9600, timeout=0.1)
+except:
+    ser = None
+
+current_stage = 0 
+is_running = True
+lock = threading.Lock()
+
+def uart_thread():
+    global current_stage, is_running
+    last_sent_stage = -1
+    last_heartbeat_time = time.time()
+    
+    while is_running:
+        if ser:
+            # --- 1. 졸음/이탈 상태 변경 시 명령 전송 ---
+            if current_stage != last_sent_stage:
+                cmd_map = {0: "!OFF#", 1: "!LV1_WARN#", 2: "!LV2_DANGER#"}
+                cmd = cmd_map.get(current_stage, "!OFF#")
+                with lock:
+                    try:
+                        ser.write(cmd.encode())
+                        print(f">> SEND STATUS: {cmd}")
+                    except: pass
+                last_sent_stage = current_stage
+            
+            # --- 2. 하트비트 전송 (1초 간격) ---
+            curr_time = time.time()
+            if curr_time - last_heartbeat_time >= 1.0:
+                with lock:
+                    try:
+                        ser.write(b'H')
+                    except: pass
+                last_heartbeat_time = curr_time
+            
+            # --- 3. 하트비트 응답 확인 (수신 버퍼 체크) ---
+            try:
+                if ser.in_waiting > 0:
+                    response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                    if 'A' in response:
+                        print("✅ Received: A (통신 정상!)")
+                    elif response.strip():
+                        print(f"❌ Unknown Response (받은 데이터: {response.strip()})")
+            except: 
+                pass
+
+        time.sleep(0.1)
+
+# --- 3. 유틸리티 ---
+def calculate_ear(eye_pts):
+    v1 = dist.euclidean(eye_pts[1], eye_pts[5])
+    v2 = dist.euclidean(eye_pts[2], eye_pts[4])
+    h = dist.euclidean(eye_pts[0], eye_pts[3])
+    return (v1 + v2) / (2.0 * h) if h != 0 else 0
+
+# --- 4. 메인 실행부 ---
+def main():
+    global current_stage, is_running
+    
+    # USB 웹캠(WebcamStream) 대신 CSI 카메라(CSICameraStream) 실행
+    vs = CSICameraStream().start()
+    time.sleep(2.0) # 카메라 예열 시간 약간 증가
+    
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
 
-# CAP_GSTREAMER 플래그는 필수입니다.
-cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
+    LEFT_EYE = [362, 385, 387, 263, 373, 380]
+    RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 
-if cap.isOpened():
-    print("카메라 연결 성공! 창이 뜨는지 확인하세요.")
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("프레임을 읽어올 수 없습니다.")
-            break
-        
-        cv2.imshow("CSI Camera Test", frame)
-        
-        # 'q' 키를 누르면 종료
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    prev_time = time.time()
     
-    cap.release()
-    cv2.destroyAllWindows()
-else:
-    # 여기가 계속 뜬다면 하드웨어 데몬 문제입니다.
-    print("카메라를 열 수 없습니다. 아래 해결법을 시도해 보세요.")
+    calibration_data = []
+    ear_threshold = 0
+    is_calibrated = False
+    calib_duration = 5.0
+    calibration_started = False
+    calib_start_time = 0
+    
+    eye_closed_start_time = 0 
+    face_missing_start_time = 0
+
+    try:
+        while True:
+            frame = vs.read()
+            if frame is None: continue
+
+            curr_time = time.time()
+            fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 30
+            prev_time = curr_time
+
+            small_frame = cv2.resize(frame, (320, 240))
+            rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb_small)
+            
+            h, w, _ = frame.shape
+            avg_ear = 0
+
+            if results.multi_face_landmarks:
+                face_missing_start_time = 0 
+
+                for face_lms in results.multi_face_landmarks:
+                    lms = face_lms.landmark
+                    left_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in LEFT_EYE])
+                    right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
+                    avg_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
+
+                    if not is_calibrated:
+                        if not calibration_started:
+                            calibration_started = True
+                            calib_start_time = time.time()
+                            
+                        elapsed = time.time() - calib_start_time
+                        if elapsed < calib_duration:
+                            calibration_data.append(avg_ear)
+                            cv2.putText(frame, f"CALIBRATING... {int(calib_duration - elapsed)}s", (30, 80), 1, 2, (0, 255, 255), 2)
+                        else:
+                            if len(calibration_data) > 0:
+                                ear_threshold = (sum(calibration_data) / len(calibration_data)) * 0.75
+                                is_calibrated = True
+                    else:
+                        if avg_ear < ear_threshold:
+                            if eye_closed_start_time == 0:
+                                eye_closed_start_time = time.time()
+                            
+                            closed_duration = time.time() - eye_closed_start_time
+                            
+                            if closed_duration >= 10.0:      
+                                current_stage = 2
+                            elif closed_duration >= 2.0:     
+                                current_stage = 1
+                            else:
+                                current_stage = 0            
+                        else:
+                            eye_closed_start_time = 0
+                            current_stage = 0
+
+                        status_list = [("NORMAL", (0, 255, 0)), ("WARNING", (0, 165, 255)), ("DANGER", (0, 0, 255))]
+                        text, color = status_list[current_stage]
+                        cv2.putText(frame, text, (30, 90), 1, 3, color, 3)
+
+            else:
+                eye_closed_start_time = 0 
+                
+                if is_calibrated:
+                    if face_missing_start_time == 0:
+                        face_missing_start_time = time.time()
+                        
+                    missing_duration = time.time() - face_missing_start_time
+                    
+                    if missing_duration >= 5.0:
+                        current_stage = 2 
+                        cv2.putText(frame, "NO FACE - DANGER!", (30, 90), 1, 3, (0, 0, 255), 3)
+                    else:
+                        cv2.putText(frame, f"FACE MISSING... {int(5.0 - missing_duration)}s", (30, 90), 1, 2, (0, 165, 255), 2)
+                else:
+                    cv2.putText(frame, "WAITING FOR FACE...", (30, 90), 1, 2, (0, 255, 255), 2)
+
+            cv2.putText(frame, f"FPS: {int(fps)}", (w - 120, 40), 1, 1.5, (255, 0, 0), 2)
+            cv2.imshow("Jetson Drowsiness System", frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'): 
+                break
+
+    finally:
+        is_running = False
+        vs.stop()
+        if ser:
+            ser.write("!OFF#".encode())
+            ser.close()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    print("--- 젯슨 나노 CSI IR 카메라 모드 시작 ---")
+    t_uart = threading.Thread(target=uart_thread)
+    t_uart.start()
+    main()
