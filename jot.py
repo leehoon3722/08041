@@ -187,3 +187,88 @@ def main():
 
                 # 가장 크기가 큰 얼굴(맨 앞사람) 찾기
                 largest_face = None
+                max_area = 0
+
+                for face_lms in results.multi_face_landmarks:
+                    xs = [lm.x for lm in face_lms.landmark]
+                    ys = [lm.y for lm in face_lms.landmark]
+                    area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                    if area > max_area:
+                        max_area = area
+                        largest_face = face_lms
+
+                if largest_face:
+                    lms = largest_face.landmark
+                    left_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in LEFT_EYE])
+                    right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
+                    avg_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
+
+                    # 캘리브레이션
+                    if not is_calibrated:
+                        if calib_start_time == 0:
+                            calib_start_time = time.time()
+                        elapsed = time.time() - calib_start_time
+                        if elapsed < calib_duration:
+                            calibration_data.append(avg_ear)
+                            cv2.putText(frame, f"CALIBRATING... {int(calib_duration - elapsed)}s", (30, 80), 1, 2, (0, 255, 255), 2)
+                        else:
+                            if len(calibration_data) > 0:
+                                ear_threshold = (sum(calibration_data) / len(calibration_data)) * 0.75
+                                is_calibrated = True
+                    # 본격적인 졸음 판별
+                    else:
+                        if avg_ear < ear_threshold: # 눈을 감음
+                            if eye_closed_start_time == 0:
+                                eye_closed_start_time = time.time()
+                            
+                            closed_duration = time.time() - eye_closed_start_time
+                            
+                            # 기준 시간에 따른 상태 업데이트
+                            if closed_duration >= 2.0:
+                                with lock: target_state = "LV2_DANGER"
+                            elif closed_duration >= 0.5:
+                                with lock: target_state = "LV1_WARN"
+                            else:
+                                with lock: target_state = "OFF"
+                        else: # 눈을 뜸
+                            eye_closed_start_time = 0
+                            with lock: target_state = "OFF"
+
+                    # 화면에 현재 상태 표시
+                    color_map = {"OFF": (0, 255, 0), "LV1_WARN": (0, 165, 255), "LV2_DANGER": (0, 0, 255)}
+                    cv2.putText(frame, target_state, (30, 90), 1, 3, color_map.get(target_state, (255, 255, 255)), 3)
+
+            else:
+                eye_closed_start_time = 0 
+                if is_calibrated:
+                    if face_missing_start_time == 0:
+                        face_missing_start_time = time.time()
+                    missing_duration = time.time() - face_missing_start_time
+                    
+                    if missing_duration >= 5.0:
+                        with lock: target_state = "LV2_DANGER"
+                        cv2.putText(frame, "NO FACE - DANGER!", (30, 90), 1, 3, (0, 0, 255), 3)
+                    else:
+                        cv2.putText(frame, f"FACE MISSING... {int(5.0 - missing_duration)}s", (30, 90), 1, 2, (0, 165, 255), 2)
+                else:
+                    cv2.putText(frame, "WAITING FOR FACE...", (30, 90), 1, 2, (0, 255, 255), 2)
+
+            cv2.putText(frame, f"FPS: {int(fps)}", (w - 120, 40), 1, 1.5, (255, 0, 0), 2)
+            cv2.imshow("Jetson Drowsiness System", frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'): 
+                break
+
+    finally:
+        is_running = False
+        vs.stop()
+        if ser:
+            ser.write("!OFF#\n".encode())
+            ser.close()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    print("--- 젯슨 나노 졸음 감지 시스템 시작 ---")
+    t_uart = threading.Thread(target=uart_thread)
+    t_uart.start()
+    main()
