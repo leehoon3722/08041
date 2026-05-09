@@ -1,39 +1,45 @@
 import cv2
-import sys
 
-def get_gst_string():
+def gstreamer_pipeline(
+    sensor_id=0,
+    capture_width=1280,
+    capture_height=720,
+    display_width=1280,
+    display_height=720,
+    framerate=30,
+    flip_method=0,
+):
     return (
-        "nvarguscamerasrc sensor-id=0 ! "
-        "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, framerate=(fraction)30/1, format=(string)NV12 ! "
-        "nvvidconv flip-method=0 ! "
-        "video/x-raw, width=(int)640, height=(int)360, format=(string)BGRx ! "
+        "nvarguscamerasrc sensor-id=%d ! "
+        "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+        "nvvidconv flip-method=%d ! "
+        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
         "videoconvert ! "
         "video/x-raw, format=(string)BGR ! appsink"
+        % (
+            sensor_id,
+            capture_width,
+            capture_height,
+            framerate,
+            flip_method,
+            display_width,
+            display_height,
+        )
     )
 
-def open_camera():
-    pipeline = get_gst_string()
-    video_capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+# 이 부분이 핵심입니다!
+cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
 
-    if not video_capture.isOpened():
-        print("Error: Unable to open camera.")
-        return
-
-    print("Camera started successfully. Press 'q' to exit.")
-
+if cap.isOpened():
     while True:
-        success, frame = video_capture.read()
-        if not success:
-            print("Error: Frame grab failed.")
+        ret, frame = cap.read()
+        if not ret:
             break
-
-        cv2.imshow("Jetson Nano Camera Test", frame)
-
+        
+        cv2.imshow("CSI Camera Test", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
-    video_capture.release()
+    cap.release()
     cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    open_camera()
+else:
+    print("카메라를 열 수 없습니다. 파이프라인이나 연결을 확인하세요.")
