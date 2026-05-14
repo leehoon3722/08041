@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import mediapipe.python.solutions.face_mesh as mp_face_mesh
 from scipy.spatial import distance as dist
-import bluetooth  # serial 대신 bluetooth 임포트
+import socket  # pybluez 대신 파이썬 내장 모듈 사용
 import time
 import threading
 import sys
@@ -60,14 +60,15 @@ class CSICameraStream:
         if self.stream.isOpened():
             self.stream.release()
 
-# --- 2. 블루투스 통신 스레드 ---
+# --- 2. 블루투스 통신 스레드 (내장 socket 버전) ---
 ESP32_MAC_ADDR = "F4:2D:C9:89:B1:A6" 
 
 sock = None
 try:
-    sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+    # 파이썬 기본 내장 블루투스 소켓 생성
+    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
     sock.settimeout(0.2) # 수신 대기 시 무한루프(멈춤) 방지용 타임아웃
-    sock.connect((ESP32_MAC_ADDR, 1))
+    sock.connect((ESP32_MAC_ADDR, 1)) # 1번 채널(RFCOMM)로 접속
     print(f"✅ 블루투스 연결 성공: {ESP32_MAC_ADDR}")
 except Exception as e:
     sock = None
@@ -90,7 +91,8 @@ def bluetooth_thread():
         while is_running and retry_count < 10:
             if not sock: break
             try:
-                sock.send(full_packet)
+                # 💡 내장 소켓은 전송 시 반드시 .encode('utf-8')로 바이트 변환 필요
+                sock.send(full_packet.encode('utf-8'))
                 print(f">> 상태 전송: {full_packet.strip()}")
                 
                 time.sleep(0.1) 
@@ -100,7 +102,7 @@ def bluetooth_thread():
                     if "A" in res:
                         print(f"✅ 수신 확인 완료 (ACK)")
                         break
-                except bluetooth.btcommon.BluetoothError:
+                except socket.timeout:
                     pass # 타임아웃 시 응답이 없는 것으로 간주하고 재전송
                 
             except Exception as e:
@@ -124,11 +126,11 @@ def bluetooth_thread():
         if curr_time - last_heartbeat_time >= 1.0:
             if sock and current_state == cmd_to_send:
                 try:
-                    sock.send("!H#\n")
+                    sock.send("!H#\n".encode('utf-8'))
                     time.sleep(0.05)
                     # 하트비트 응답 버퍼 비우기
                     try: sock.recv(1024) 
-                    except: pass
+                    except socket.timeout: pass
                 except: pass
             last_heartbeat_time = curr_time
             
@@ -266,13 +268,13 @@ def main():
         is_running = False
         vs.stop()
         if sock:
-            try: sock.send("!OFF#\n")
+            try: sock.send("!OFF#\n".encode('utf-8'))
             except: pass
             sock.close()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    print("--- 젯슨 나노 졸음 감지 시스템 (블루투스 모드) 시작 ---")
+    print("--- 젯슨 나노 졸음 감지 시스템 (내장 블루투스 모드) 시작 ---")
     t_bt = threading.Thread(target=bluetooth_thread)
     t_bt.start()
     main()
