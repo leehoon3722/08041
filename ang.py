@@ -67,7 +67,7 @@ sock = None
 try:
     # 파이썬 기본 내장 블루투스 소켓 생성
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-    sock.settimeout(0.2) # 수신 대기 시 무한루프(멈춤) 방지용 타임아웃
+    sock.settimeout(5.0) # 수신 대기 시 무한루프(멈춤) 방지용 타임아웃
     sock.connect((ESP32_MAC_ADDR, 1)) # 1번 채널(RFCOMM)로 접속
     print(f"✅ 블루투스 연결 성공: {ESP32_MAC_ADDR}")
 except Exception as e:
