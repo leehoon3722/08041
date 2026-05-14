@@ -65,10 +65,9 @@ ESP32_MAC_ADDR = "F4:2D:C9:89:B1:A6"
 
 sock = None
 try:
-    # 파이썬 기본 내장 블루투스 소켓 생성
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-    sock.settimeout(5.0) # 수신 대기 시 무한루프(멈춤) 방지용 타임아웃
-    sock.connect((ESP32_MAC_ADDR, 1)) # 1번 채널(RFCOMM)로 접속
+    sock.settimeout(5.0) 
+    sock.connect((ESP32_MAC_ADDR, 1)) 
     print(f"✅ 블루투스 연결 성공: {ESP32_MAC_ADDR}")
 except Exception as e:
     sock = None
@@ -84,30 +83,23 @@ def bluetooth_thread():
     last_heartbeat_time = time.time()
 
     def send_command(cmd_text):
-        """명령어 전송 및 ESP32의 'A' 응답(ACK) 대기"""
         full_packet = f"!{cmd_text}#\n"
         retry_count = 0
-        
         while is_running and retry_count < 10:
             if not sock: break
             try:
-                # 💡 내장 소켓은 전송 시 반드시 .encode('utf-8')로 바이트 변환 필요
                 sock.send(full_packet.encode('utf-8'))
                 print(f">> 상태 전송: {full_packet.strip()}")
-                
                 time.sleep(0.1) 
-                # ESP32로부터 'A' 응답을 받았는지 확인 (Handshaking)
                 try:
                     res = sock.recv(1024).decode('utf-8', errors='ignore').strip()
                     if "A" in res:
                         print(f"✅ 수신 확인 완료 (ACK)")
                         break
                 except socket.timeout:
-                    pass # 타임아웃 시 응답이 없는 것으로 간주하고 재전송
-                
+                    pass
             except Exception as e:
                 print(f"통신 에러: {e}")
-            
             retry_count += 1
             time.sleep(0.1)
 
@@ -115,25 +107,21 @@ def bluetooth_thread():
         with lock:
             cmd_to_send = target_state
         
-        # 1. 상태가 변했을 때 확실하게 전송
         if cmd_to_send != current_state:
             send_command(cmd_to_send)
             current_state = cmd_to_send
             last_heartbeat_time = time.time()
             
-        # 2. 하트비트 전송 (!H#\n)
         curr_time = time.time()
         if curr_time - last_heartbeat_time >= 1.0:
             if sock and current_state == cmd_to_send:
                 try:
                     sock.send("!H#\n".encode('utf-8'))
                     time.sleep(0.05)
-                    # 하트비트 응답 버퍼 비우기
                     try: sock.recv(1024) 
                     except socket.timeout: pass
                 except: pass
             last_heartbeat_time = curr_time
-            
         time.sleep(0.1)
 
 # --- 3. 유틸리티 (눈 크기 계산) ---
@@ -152,7 +140,7 @@ def main():
     time.sleep(2.0) 
     
     face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=5, # 뒤 사람 포함 다중 탐지
+        max_num_faces=5, 
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
@@ -191,10 +179,8 @@ def main():
             if results.multi_face_landmarks:
                 face_missing_start_time = 0 
 
-                # 가장 크기가 큰 얼굴(맨 앞사람) 찾기
                 largest_face = None
                 max_area = 0
-
                 for face_lms in results.multi_face_landmarks:
                     xs = [lm.x for lm in face_lms.landmark]
                     ys = [lm.y for lm in face_lms.landmark]
@@ -209,7 +195,6 @@ def main():
                     right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
                     avg_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
-                    # 캘리브레이션
                     if not is_calibrated:
                         if calib_start_time == 0:
                             calib_start_time = time.time()
@@ -221,25 +206,29 @@ def main():
                             if len(calibration_data) > 0:
                                 ear_threshold = (sum(calibration_data) / len(calibration_data)) * 0.75
                                 is_calibrated = True
-                    # 졸음 판별 로직
+                    
+                    # --- 핵심 수정: 졸음 판별 로직 ---
                     else:
                         if avg_ear < ear_threshold:
                             if eye_closed_start_time == 0:
                                 eye_closed_start_time = time.time()
                             
-                            closed_duration = time.time() - eye_closed_start_time
+                            closed_sec = time.time() - eye_closed_start_time
                             
-                            if closed_duration >= 2.0:
+                            if closed_sec >= 2.0:  # 2초 이상 감음: 2단계
                                 with lock: target_state = "LV2_DANGER"
-                            elif closed_duration >= 0.5:
+                            elif closed_sec >= 1.0: # 1초 이상 감음: 1단계
                                 with lock: target_state = "LV1_WARN"
-                            else:
+                            else:                  # 1초 미만: 정상
                                 with lock: target_state = "OFF"
+                            
+                            # 화면에 감은 시간 표시 (디버깅용)
+                            cv2.putText(frame, f"Closed: {closed_sec:.1f}s", (30, 130), 1, 2, (255, 255, 255), 2)
                         else: 
                             eye_closed_start_time = 0
                             with lock: target_state = "OFF"
 
-                        # 상태 표시
+                        # 상태 메시지 출력
                         color_map = {"OFF": (0, 255, 0), "LV1_WARN": (0, 165, 255), "LV2_DANGER": (0, 0, 255)}
                         cv2.putText(frame, target_state, (30, 90), 1, 3, color_map.get(target_state, (255, 255, 255)), 3)
 
@@ -274,7 +263,7 @@ def main():
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    print("--- 젯슨 나노 졸음 감지 시스템 (내장 블루투스 모드) 시작 ---")
+    print("--- 젯슨 나노 졸음 감지 시스템 (수정된 로직) 시작 ---")
     t_bt = threading.Thread(target=bluetooth_thread)
     t_bt.start()
     main()
