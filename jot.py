@@ -35,7 +35,7 @@ FPS_TARGET   = 30
 FLIP_METHOD  = 0
 
 # 블루투스
-ESP32_MAC_ADDR        = "F4:2D:C9:89:B1:A6"
+ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 0.2
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
