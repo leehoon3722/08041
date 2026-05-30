@@ -495,6 +495,17 @@ class AdaptiveThreshold:
             return self.calib_sec
         return max(0.0, self.calib_sec - (time.time() - self._calib_start))
 
+    def reset(self):
+        """새 탑승자를 위한 캘리브레이션 초기화 (R 키)."""
+        self.calib_buf     = []
+        self.long_term_buf.clear()
+        self.threshold     = None
+        self.baseline      = None
+        self.is_calibrated = False
+        self._calib_start  = None
+        self._last_recalib = None
+        print("[캘리브레이션 초기화] 새 탑승자 캘리브레이션 시작")
+
 
 
 # ══════════════════════════════════════════
@@ -648,7 +659,9 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
         cv2.putText(frame, wd_text, (10, bar_y + 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, wd_color, 1)
 
-def draw_no_face(frame, is_calibrated, missing_sec):
+    # R키 안내
+    cv2.putText(frame, "R: recalibrate", (10, h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
     h, w = frame.shape[:2]
     if not is_calibrated:
         cv2.putText(frame, "WAITING FOR FACE...", (30, 90),
@@ -674,9 +687,9 @@ def main():
     print("✅ CSI 카메라 시작")
 
     face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=5,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        max_num_faces=1,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.7,
     )
 
     ema          = EMAFilter(EMA_ALPHA)
@@ -713,7 +726,7 @@ def main():
             prev_time = curr_time
 
             h, w, _ = frame.shape
-            small   = cv2.resize(frame, (320, 240))
+            small   = cv2.resize(frame, (640, 480))
             rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
             try:
@@ -823,8 +836,21 @@ def main():
                 prev_state = state
 
             cv2.imshow("Jetson Drowsiness System", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("r"):
+                # 새 탑승자 → 캘리브레이션 전체 리셋
+                adaptive_thr.reset()
+                ema._value            = None
+                perclos_calc.history.clear()
+                instant_closed_frames = 0
+                state                 = "OFF"
+                prev_state            = "OFF"
+                face_missing_start    = 0.0
+                with bt_lock:
+                    target_state = "OFF"
+                print("🔄 [R키] 새 탑승자 캘리브레이션 시작 — 정면을 바라봐 주세요")
 
     finally:
         is_running = False
