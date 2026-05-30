@@ -35,12 +35,13 @@ FPS_TARGET   = 30
 FLIP_METHOD  = 0
 
 # 블루투스
+FORCE_SIM_MODE        = True   # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
 ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
 BT_ACK_RETRY          = 10     # ACK 재시도 횟수
-BT_RECONNECT_INTERVAL = 5.0    # ① 재연결 시도 간격 (초)
+BT_RECONNECT_INTERVAL = 5.0    # 재연결 시도 간격 (초)
 BT_ABNORMAL_THRESHOLD = 3      # ESP32 비정상 응답 N회 → 프로세스 재시작
 BT_ABNORMAL_RESET_SEC = 30.0   # 이 시간 동안 정상 응답이면 카운트 리셋
 
@@ -70,10 +71,9 @@ RECALIB_MAX_DRIFT  = 0.10
 # 얼굴 없음 → 위험
 FACE_MISSING_DANGER_SEC = 5.0
 
-# 워치독 (잘못된 신호 감지 → 프로세스 재시작)
-WATCHDOG_THRESHOLD      = 3      # 이 횟수 이상 잘못된 신호 → 재시작
-WATCHDOG_RESET_SEC      = 30.0   # 이 시간 동안 오류 없으면 카운트 초기화
-WATCHDOG_CAM_FAIL_LIMIT = 30     # 연속 카메라 드롭 프레임 수 기준
+# BT 통신 실패 재시작
+# --restarted 인자가 있으면 이미 1회 재시작된 것 → 시뮬레이션 모드로 전환
+BT_ALREADY_RESTARTED = "--restarted" in sys.argv
 
 # MediaPipe 눈 랜드마크
 LEFT_EYE  = [362, 385, 387, 263, 373, 380]
@@ -191,9 +191,14 @@ def _bt_record_normal():
         _bt_last_abnormal_time = 0.0
 
 def _bt_restart():
-    """ESP32 비정상 응답 누적 → 프로세스 재시작."""
+    """BT 비정상 응답 누적 → 프로세스 재시작 (1회만). 이미 재시작된 경우 시뮬레이션 모드."""
     global sock, is_running
-    print(f"\n🔁 [BT 워치독] 비정상 응답 {BT_ABNORMAL_THRESHOLD}회 도달 → 프로세스 재시작\n")
+    if BT_ALREADY_RESTARTED:
+        # 재시작 후에도 BT 실패 → 시뮬레이션 모드로 전환 (무한루프 방지)
+        print("⚠️  [BT] 재시작 후에도 통신 실패 → 시뮬레이션 모드로 전환")
+        _enter_sim_mode("재시작 후에도 BT 통신 실패")
+        return
+    print(f"\n🔁 [BT] 비정상 응답 {BT_ABNORMAL_THRESHOLD}회 → 프로세스 재시작\n")
     is_running = False
     with sock_lock:
         if sock:
@@ -204,7 +209,7 @@ def _bt_restart():
             sock = None
     cv2.destroyAllWindows()
     time.sleep(0.5)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    os.execv(sys.executable, [sys.executable] + sys.argv + ["--restarted"])
 
 def _enter_sim_mode(reason: str):
     """BT 연결 불가 → 시뮬레이션 모드 진입."""
@@ -257,6 +262,9 @@ def _create_socket():
 
 def _init_bluetooth():
     global sock
+    if FORCE_SIM_MODE:
+        _enter_sim_mode("강제 시뮬레이션 모드 (FORCE_SIM_MODE=True)")
+        return
     with sock_lock:
         sock = _create_socket()
     if sock is None:
@@ -319,16 +327,19 @@ def bluetooth_thread():
         if not is_connected:
             now = time.time()
             if now - last_reconnect >= BT_RECONNECT_INTERVAL:
-                print("🔄 블루투스 재연결 시도...")
-                new_sock = _create_socket()
-                with sock_lock:
-                    sock = new_sock
-                last_reconnect = now
-                if sock:
-                    _exit_sim_mode()               # 재연결 성공 → 시뮬레이션 종료
-                    current_state = "FORCE_RESEND" # 현재 상태 즉시 재전송
+                if FORCE_SIM_MODE:
+                    last_reconnect = now   # 재연결 시도 없이 대기만
                 else:
-                    _enter_sim_mode("재연결 실패")  # 여전히 실패 → 유지
+                    print("🔄 블루투스 재연결 시도...")
+                    new_sock = _create_socket()
+                    with sock_lock:
+                        sock = new_sock
+                    last_reconnect = now
+                    if sock:
+                        _exit_sim_mode()
+                        current_state = "FORCE_RESEND"
+                    else:
+                        _enter_sim_mode("재연결 실패")
             time.sleep(0.5)
             continue
 
@@ -509,85 +520,7 @@ class AdaptiveThreshold:
 
 
 # ══════════════════════════════════════════
-# 7. ③ 신호 워치독
-# ══════════════════════════════════════════
-class SignalWatchdog:
-    """
-    세 가지 잘못된 신호를 독립적으로 카운트.
-    어느 하나라도 WATCHDOG_THRESHOLD 이상이면 프로세스를 재시작.
-
-    감시 대상
-    ─────────
-    CAM_FAIL      : 연속 카메라 프레임 드롭이 WATCHDOG_CAM_FAIL_LIMIT 초과
-    EAR_INVALID   : EAR 값이 물리적으로 불가능한 범위 (≤0 or ≥1.0)
-    PROCESS_EXCEPT: 메인 루프에서 예외 발생
-    """
-
-    SIGNAL_TYPES = ("CAM_FAIL", "EAR_INVALID", "PROCESS_EXCEPT")
-
-    def __init__(self):
-        self._counts    = {s: 0 for s in self.SIGNAL_TYPES}
-        self._last_err  = {s: 0.0 for s in self.SIGNAL_TYPES}  # 마지막 오류 시각
-        self._lock      = threading.Lock()
-
-    # ── 공개 API ──────────────────────────────
-
-    def record(self, signal_type: str):
-        """잘못된 신호 1회 기록. 임계값 도달 시 즉시 재시작."""
-        if signal_type not in self.SIGNAL_TYPES:
-            return
-        with self._lock:
-            self._reset_if_expired(signal_type)
-            self._counts[signal_type] += 1
-            self._last_err[signal_type] = time.time()
-            count = self._counts[signal_type]
-
-        print(f"⚠️  [워치독] {signal_type} 오류 {count}/{WATCHDOG_THRESHOLD}회")
-
-        if count >= WATCHDOG_THRESHOLD:
-            self._restart(signal_type)
-
-    def clear(self, signal_type: str):
-        """정상 신호 수신 시 해당 타입 카운트 초기화."""
-        with self._lock:
-            self._counts[signal_type]   = 0
-            self._last_err[signal_type] = 0.0
-
-    def counts(self) -> dict:
-        with self._lock:
-            return dict(self._counts)
-
-    # ── 내부 메서드 ───────────────────────────
-
-    def _reset_if_expired(self, signal_type: str):
-        """마지막 오류 후 WATCHDOG_RESET_SEC이 지나면 카운트 리셋."""
-        last = self._last_err[signal_type]
-        if last > 0 and (time.time() - last) >= WATCHDOG_RESET_SEC:
-            print(f"[워치독] {signal_type} 카운트 만료 리셋 "
-                  f"({self._counts[signal_type]} → 0)")
-            self._counts[signal_type]   = 0
-            self._last_err[signal_type] = 0.0
-
-    def _restart(self, trigger: str):
-        """현재 프로세스를 동일 인자로 재시작 (os.execv)."""
-        print(f"\n🔁 [워치독] {trigger} 오류 {WATCHDOG_THRESHOLD}회 도달 → 프로세스 재시작\n")
-        # 블루투스 안전 종료
-        global sock, is_running
-        is_running = False
-        with sock_lock:
-            if sock:
-                try: sock.send("!OFF#\n".encode("utf-8"))
-                except: pass
-                try: sock.close()
-                except: pass
-        cv2.destroyAllWindows()
-        time.sleep(0.5)
-        # 동일 스크립트를 동일 인자로 교체 실행
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
-# ══════════════════════════════════════════
-# 8. 화면 오버레이
+# 7. 화면 오버레이
 # ══════════════════════════════════════════
 STATE_COLORS = {
     "OFF"        : (50,  205, 50),
@@ -596,7 +529,7 @@ STATE_COLORS = {
 }
 
 def draw_overlay(frame, state, fps, perclos, ear, threshold,
-                 is_calibrated, calib_rem, bt_ok, wd_counts):
+                 is_calibrated, calib_rem, bt_ok):
     h, w = frame.shape[:2]
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 55), (20, 20, 20), -1)
@@ -698,7 +631,6 @@ def main():
         CALIB_DURATION_SEC, RECALIB_INTERVAL,
         RECALIB_WINDOW_SEC, FPS_TARGET, RECALIB_MAX_DRIFT,
     )
-    watchdog = SignalWatchdog()   # ③
 
     state                 = "OFF"
     prev_state            = "OFF"
@@ -711,15 +643,10 @@ def main():
     try:
         while True:
             frame = vs.read()
-
-            # ── ③ 카메라 프레임 드롭 감지 ──
-            if frame is None or vs.consecutive_fail > WATCHDOG_CAM_FAIL_LIMIT:
-                watchdog.record("CAM_FAIL")
+            if frame is None:
                 instant_closed_frames = 0
                 time.sleep(0.01)
                 continue
-            else:
-                watchdog.clear("CAM_FAIL")
 
             curr_time = time.time()
             fps       = 1.0 / max(curr_time - prev_time, 1e-6)
@@ -733,7 +660,6 @@ def main():
                 results = face_mesh.process(rgb)
             except Exception as e:
                 print(f"⚠️  MediaPipe 처리 예외: {e}")
-                watchdog.record("PROCESS_EXCEPT")
                 continue
 
             ema_ear = ema.value
@@ -757,37 +683,35 @@ def main():
                     right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
                     raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
-                    # ── ③ EAR 범위 유효성 검사 ──
+                    # 물리적으로 불가능한 EAR은 프레임만 건너뜀 (재시작 아님)
                     if raw_ear <= 0.0 or raw_ear >= 1.0:
-                        watchdog.record("EAR_INVALID")
-                    else:
-                        watchdog.clear("EAR_INVALID")
-                        watchdog.clear("PROCESS_EXCEPT")
+                        continue
 
-                        ema_ear = ema.update(raw_ear)
-                        is_cal  = adaptive_thr.update(ema_ear, perclos)
+                    watchdog.clear("PROCESS_EXCEPT")
+                    ema_ear = ema.update(raw_ear)
+                    is_cal  = adaptive_thr.update(ema_ear, perclos)
 
-                        if is_cal and adaptive_thr.threshold:
-                            perclos = perclos_calc.update(ema_ear, adaptive_thr.threshold)
+                    if is_cal and adaptive_thr.threshold:
+                        perclos = perclos_calc.update(ema_ear, adaptive_thr.threshold)
 
-                            # 즉각 트리거
-                            if ema_ear < adaptive_thr.threshold * INSTANT_RATIO:
-                                instant_closed_frames += 1
-                            else:
-                                # 경보 상태에서 눈이 다시 열렸으면 PERCLOS 히스토리 빠르게 희석
-                                if instant_closed_frames >= INSTANT_LV1_FRAMES:
-                                    perclos_calc.fast_recover(ema_ear, n=10)
-                                instant_closed_frames = 0
+                        # 즉각 트리거
+                        if ema_ear < adaptive_thr.threshold * INSTANT_RATIO:
+                            instant_closed_frames += 1
+                        else:
+                            # 경보 상태에서 눈이 다시 열렸으면 PERCLOS 히스토리 빠르게 희석
+                            if instant_closed_frames >= INSTANT_LV1_FRAMES:
+                                perclos_calc.fast_recover(ema_ear, n=10)
+                            instant_closed_frames = 0
 
-                            # 상태 판별
-                            if instant_closed_frames >= INSTANT_LV2_FRAMES or perclos >= PERCLOS_LV2:
-                                state = "LV2_DANGER"
-                            elif instant_closed_frames >= INSTANT_LV1_FRAMES or perclos >= PERCLOS_LV1:
-                                state = "LV1_WARN"
-                            else:
-                                state = "OFF"
+                        # 상태 판별
+                        if instant_closed_frames >= INSTANT_LV2_FRAMES or perclos >= PERCLOS_LV2:
+                            state = "LV2_DANGER"
+                        elif instant_closed_frames >= INSTANT_LV1_FRAMES or perclos >= PERCLOS_LV1:
+                            state = "LV1_WARN"
                         else:
                             state = "OFF"
+                    else:
+                        state = "OFF"
 
                 with sock_lock:
                     bt_ok = sock is not None
@@ -797,7 +721,7 @@ def main():
                     adaptive_thr.threshold or 0.0,
                     adaptive_thr.is_calibrated,
                     adaptive_thr.calib_remaining(),
-                    bt_ok, watchdog.counts(),
+                    bt_ok,
                 )
 
             else:
@@ -820,7 +744,7 @@ def main():
                     frame, state, fps, 0.0, 0.0, 0.0,
                     adaptive_thr.is_calibrated,
                     adaptive_thr.calib_remaining(),
-                    bt_ok, watchdog.counts(),
+                    bt_ok,
                 )
 
             # 블루투스 상태 동기화
