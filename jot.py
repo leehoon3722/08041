@@ -154,7 +154,7 @@ is_running   = True
 bt_lock      = threading.Lock()
 
 # 시뮬레이션 모드
-sim_mode      = False         # BT 연결 실패 시 True로 전환
+sim_mode      = True         # BT 연결 실패 시 True로 전환
 sim_mode_lock = threading.Lock()
 _sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
 
