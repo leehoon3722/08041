@@ -1,10 +1,9 @@
 """
-졸음 감지 시스템 — 젯슨 나노 최종 버전
+졸음 감지 시스템 — 젯슨 나노 최종 버전 (수정 완료)
 =========================================
 [보완 사항]
   ① 블루투스 자동 재연결     : 끊어지면 BT_RECONNECT_INTERVAL초마다 재시도
   ② 캘리브레이션 이상값 필터 : IQR 기반으로 눈 감은 프레임 제거 후 baseline 계산
-  ③ 신호 워치독              : 잘못된 신호 3회 이상 → 프로세스 자동 재시작
 
 [EAR 알고리즘]
   - EMA 스무딩 / PERCLOS / 즉각 트리거 / 적응형 임계값
@@ -518,7 +517,6 @@ class AdaptiveThreshold:
         print("[캘리브레이션 초기화] 새 탑승자 캘리브레이션 시작")
 
 
-
 # ══════════════════════════════════════════
 # 7. 화면 오버레이
 # ══════════════════════════════════════════
@@ -580,21 +578,12 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
     cv2.putText(frame, f"EAR {ear:.3f}  THR {threshold:.3f}",
                 (10, bar_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
-    # ③ 워치독 카운트 표시 (오류 1회 이상일 때만)
-    wd_text_parts = []
-    label_map = {"CAM_FAIL": "CAM", "EAR_INVALID": "EAR", "PROCESS_EXCEPT": "EXC"}
-    for sig, cnt in wd_counts.items():
-        if cnt > 0:
-            wd_text_parts.append(f"{label_map[sig]}:{cnt}/{WATCHDOG_THRESHOLD}")
-    if wd_text_parts:
-        wd_text  = "WD " + "  ".join(wd_text_parts)
-        wd_color = (0, 165, 255) if max(wd_counts.values()) < WATCHDOG_THRESHOLD else (0, 0, 255)
-        cv2.putText(frame, wd_text, (10, bar_y + 78),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, wd_color, 1)
-
     # R키 안내
     cv2.putText(frame, "R: recalibrate", (10, h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
+
+
+def draw_no_face(frame, is_calibrated, missing_sec):
     h, w = frame.shape[:2]
     if not is_calibrated:
         cv2.putText(frame, "WAITING FOR FACE...", (30, 90),
@@ -606,6 +595,7 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
     else:
         cv2.putText(frame, f"FACE MISSING... {int(FACE_MISSING_DANGER_SEC - missing_sec)}s",
                     (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 2)
+
 
 # ══════════════════════════════════════════
 # 9. 메인 루프
@@ -687,7 +677,6 @@ def main():
                     if raw_ear <= 0.0 or raw_ear >= 1.0:
                         continue
 
-                    watchdog.clear("PROCESS_EXCEPT")
                     ema_ear = ema.update(raw_ear)
                     is_cal  = adaptive_thr.update(ema_ear, perclos)
 
