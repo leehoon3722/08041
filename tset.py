@@ -1,11 +1,13 @@
 """
-졸음 감지 시스템 — 젯슨 나노 최종 보완 및 버그 수정 버전
-=========================================================
-[수정 및 반영 사항]
-  ① 화질 개선 : MediaPipe 처리 및 연산 해상도를 (640, 360)으로 상향
-  ② 좌표 매핑 버그 수정 : MediaPipe 입력 영상 해상도와 랜드마크 픽셀 변환 해상도 일치 (눈 감지 정상화)
-  ③ 하트비트 전송 보완 : 하트비트 패킷 유실 및 상태 꼬임 방지, 정상 전송 보증
-  ④ 안전 장치 : 블루투스 자동 재연결, IQR 기반 캘리브레이션 필터, 신호 워치독 유지
+졸음 감지 시스템 — 젯슨 나노 최종 버전
+=========================================
+[보완 사항]
+  ① 블루투스 자동 재연결     : 끊어지면 BT_RECONNECT_INTERVAL초마다 재시도
+  ② 캘리브레이션 이상값 필터 : IQR 기반으로 눈 감은 프레임 제거 후 baseline 계산
+  ③ 신호 워치독              : 잘못된 신호 3회 이상 → 프로세스 자동 재시작
+
+[EAR 알고리즘]
+  - EMA 스무딩 / PERCLOS / 즉각 트리거 / 적응형 임계값
 """
 
 import cv2
@@ -23,14 +25,12 @@ import os
 # 0. 파라미터 설정
 # ══════════════════════════════════════════
 
-# CSI 카메라 및 처리 해상도
+# CSI 카메라
 SENSOR_ID    = 0
 CAP_WIDTH    = 1280
 CAP_HEIGHT   = 720
 DISP_WIDTH   = 640
 DISP_HEIGHT  = 480
-PROCESS_W    = 640  # 화질 향상을 위한 MediaPipe/연산용 가로 크기
-PROCESS_H    = 360  # 화질 향상을 위한 MediaPipe/연산용 세로 크기
 FPS_TARGET   = 30
 FLIP_METHOD  = 0
 
@@ -40,7 +40,7 @@ BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
 BT_ACK_RETRY          = 10     # ACK 재시도 횟수
-BT_RECONNECT_INTERVAL = 5.0    # 재연결 시도 간격 (초)
+BT_RECONNECT_INTERVAL = 5.0    # ① 재연결 시도 간격 (초)
 BT_ABNORMAL_THRESHOLD = 3      # ESP32 비정상 응답 N회 → 프로세스 재시작
 BT_ABNORMAL_RESET_SEC = 30.0   # 이 시간 동안 정상 응답이면 카운트 리셋
 
@@ -60,7 +60,7 @@ INSTANT_LV2_FRAMES = 8
 
 # 캘리브레이션
 CALIB_DURATION_SEC = 5.0
-CALIB_IQR_FACTOR   = 1.5   # IQR × 이 값 이내만 유효 샘플로 인정
+CALIB_IQR_FACTOR   = 1.5   # ② IQR × 이 값 이내만 유효 샘플로 인정
 
 # 적응형 재보정
 RECALIB_INTERVAL   = 120.0
@@ -128,7 +128,6 @@ class CSICameraStream:
                         self._consecutive_fail = 0
                     else:
                         self._consecutive_fail += 1
-            time.sleep(0.01)
 
     def read(self):
         with self._lock:
@@ -146,7 +145,7 @@ class CSICameraStream:
             self.stream.release()
 
 # ══════════════════════════════════════════
-# 2. 블루투스 통신 및 하트비트 스레드
+# 2. 블루투스 — ① 자동 재연결 포함
 # ══════════════════════════════════════════
 sock         = None
 sock_lock    = threading.Lock()
@@ -154,7 +153,7 @@ target_state = "OFF"
 is_running   = True
 bt_lock      = threading.Lock()
 
-# 시뮬레이션 모드 관련
+# 시뮬레이션 모드
 sim_mode      = False         # BT 연결 실패 시 True로 전환
 sim_mode_lock = threading.Lock()
 _sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
@@ -165,9 +164,11 @@ _bt_last_abnormal_time = 0.0
 _bt_abnormal_lock     = threading.Lock()
 
 def _bt_record_abnormal(reason: str):
+    """비정상 응답 1회 기록. BT_ABNORMAL_THRESHOLD 도달 시 프로세스 재시작."""
     global _bt_abnormal_count, _bt_last_abnormal_time
     with _bt_abnormal_lock:
         now = time.time()
+        # 마지막 이상 신호 후 BT_ABNORMAL_RESET_SEC 경과 시 카운트 리셋
         if _bt_last_abnormal_time > 0 and (now - _bt_last_abnormal_time) >= BT_ABNORMAL_RESET_SEC:
             print(f"[BT 워치독] 카운트 만료 리셋 ({_bt_abnormal_count} → 0)")
             _bt_abnormal_count = 0
@@ -176,10 +177,12 @@ def _bt_record_abnormal(reason: str):
         count = _bt_abnormal_count
 
     print(f"⚠️  [BT 워치독] 비정상 응답 {count}/{BT_ABNORMAL_THRESHOLD}회 — 원인: {reason}")
+
     if count >= BT_ABNORMAL_THRESHOLD:
         _bt_restart()
 
 def _bt_record_normal():
+    """정상 ACK 수신 시 카운트 리셋."""
     global _bt_abnormal_count, _bt_last_abnormal_time
     with _bt_abnormal_lock:
         if _bt_abnormal_count > 0:
@@ -188,6 +191,7 @@ def _bt_record_normal():
         _bt_last_abnormal_time = 0.0
 
 def _bt_restart():
+    """ESP32 비정상 응답 누적 → 프로세스 재시작."""
     global sock, is_running
     print(f"\n🔁 [BT 워치독] 비정상 응답 {BT_ABNORMAL_THRESHOLD}회 도달 → 프로세스 재시작\n")
     is_running = False
@@ -203,33 +207,44 @@ def _bt_restart():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 def _enter_sim_mode(reason: str):
+    """BT 연결 불가 → 시뮬레이션 모드 진입."""
     global sim_mode
     with sim_mode_lock:
-        if sim_mode: return
+        if sim_mode:
+            return
         sim_mode = True
     print(f"\n{'='*50}")
     print(f"⚠️  [시뮬레이션 모드] 블루투스 연결 실패 — ESP32 없이 동작")
     print(f"   원인: {reason}")
+    print(f"   상태 변경은 콘솔에 출력됩니다.")
     print(f"   백그라운드에서 {BT_RECONNECT_INTERVAL}초마다 재연결 시도 중...")
     print(f"{'='*50}\n")
 
 def _exit_sim_mode():
+    """BT 재연결 성공 → 실제 모드로 복귀."""
     global sim_mode
     with sim_mode_lock:
-        if not sim_mode: return
+        if not sim_mode:
+            return
         sim_mode = False
     print(f"\n{'='*50}")
     print(f"✅ [시뮬레이션 모드 종료] 블루투스 재연결 성공 — 실제 모드로 전환")
+    if _sim_log_buf:
+        print(f"   시뮬레이션 중 상태 변경 기록 ({len(_sim_log_buf)}건):")
+        for entry in _sim_log_buf[-10:]:   # 최근 10건만 출력
+            print(f"     {entry}")
     print(f"{'='*50}\n")
     _sim_log_buf.clear()
 
 def _sim_log(state: str, perclos: float):
+    """시뮬레이션 모드에서 상태 변경을 콘솔 + 버퍼에 기록."""
     timestamp = time.strftime("%H:%M:%S")
     entry = f"[{timestamp}] 상태={state}  PERCLOS={perclos:.1%}"
     _sim_log_buf.append(entry)
     print(f"📋 [SIM] {entry}")
 
 def _create_socket():
+    """소켓 생성 + 연결 시도. 실패 시 None 반환."""
     try:
         s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
         s.settimeout(BT_TIMEOUT)
@@ -248,25 +263,38 @@ def _init_bluetooth():
         _enter_sim_mode("초기 연결 실패")
 
 def _send_command(cmd_text: str) -> bool:
+    """
+    명령 전송 + ESP32 응답 판별.
+    - 'A'  포함 → 정상 ACK  → 카운트 리셋, True 반환
+    - 'E'  포함 → ESP32 에러 응답 → 비정상 카운트 +1
+    - 빈 응답/타임아웃 → 비정상 카운트 +1
+    - 소켓 예외 → sock=None 후 False 반환
+    """
     global sock
     with sock_lock:
-        if not sock: return False
+        if not sock:
+            return False
         packet = f"!{cmd_text}#\n".encode("utf-8")
         for _ in range(BT_ACK_RETRY):
-            if not is_running: return False
+            if not is_running:
+                return False
             try:
                 sock.send(packet)
-                time.sleep(0.05)
+                time.sleep(0.1)
                 try:
                     res = sock.recv(1024).decode("utf-8", errors="ignore").strip()
                     if "A" in res:
+                        # ── 정상 ACK ──
                         _bt_record_normal()
                         return True
                     elif res:
+                        # ── ESP32가 응답은 했지만 ACK가 아님 (에러 코드 등) ──
                         _bt_record_abnormal(f"비정상 응답: '{res}'")
                     else:
+                        # ── 빈 응답 ──
                         _bt_record_abnormal("빈 응답(empty)")
                 except socket.timeout:
+                    # ── 응답 없음 ──
                     _bt_record_abnormal("응답 타임아웃")
             except Exception as e:
                 print(f"BT 전송 에러 (재연결 필요): {e}")
@@ -274,21 +302,20 @@ def _send_command(cmd_text: str) -> bool:
                 except: pass
                 sock = None
                 return False
-            time.sleep(0.05)
+            time.sleep(0.1)
     return False
 
 def bluetooth_thread():
-    """자동 재연결 및 확실한 하트비트 신호(!H#) 주기적 송신"""
-    global sock, is_running, target_state
+    """① 자동 재연결: sock이 None이면 BT_RECONNECT_INTERVAL마다 재시도"""
+    global sock, is_running
     current_state  = "OFF"
     last_heartbeat = time.time()
     last_reconnect = 0.0
 
     while is_running:
+        # ── ① 재연결 체크 ──
         with sock_lock:
             is_connected = sock is not None
-        
-        # ── 재연결 체크 ──
         if not is_connected:
             now = time.time()
             if now - last_reconnect >= BT_RECONNECT_INTERVAL:
@@ -298,25 +325,25 @@ def bluetooth_thread():
                     sock = new_sock
                 last_reconnect = now
                 if sock:
-                    _exit_sim_mode()
-                    current_state = "FORCE_RESEND"
+                    _exit_sim_mode()               # 재연결 성공 → 시뮬레이션 종료
+                    current_state = "FORCE_RESEND" # 현재 상태 즉시 재전송
                 else:
-                    _enter_sim_mode("재연결 실패")
+                    _enter_sim_mode("재연결 실패")  # 여전히 실패 → 유지
             time.sleep(0.5)
             continue
 
         with bt_lock:
             cmd = target_state
 
-        # ── 상태 변경 시 명령 우선 전송 ──
+        # ── 상태 변경 시 전송 ──
         if cmd != current_state or current_state == "FORCE_RESEND":
             success = _send_command(cmd)
             if success:
-                print(f">> BT 상태 전송 완료: {current_state} → {cmd}")
+                print(f">> BT: {current_state} → {cmd}")
                 current_state  = cmd
                 last_heartbeat = time.time()
 
-        # ── 주기적 하트비트(!H#) 신호 전송 ──
+        # ── 하트비트 ──
         now = time.time()
         if now - last_heartbeat >= BT_HEARTBEAT_INTERVAL:
             with sock_lock:
@@ -331,8 +358,8 @@ def bluetooth_thread():
                             _bt_record_normal()
                         elif res:
                             _bt_record_abnormal(f"하트비트 비정상 응답: '{res}'")
+                        # 타임아웃은 하트비트에서 허용 (카운트 안 함)
                     except socket.timeout:
-                        # 하트비트 타임아웃은 유연하게 처리하되 로그만 가볍게 남김
                         pass
                 except Exception:
                     with sock_lock:
@@ -344,7 +371,7 @@ def bluetooth_thread():
         time.sleep(0.05)
 
 # ══════════════════════════════════════════
-# 3. EAR 및 알고리즘 클래스들
+# 3. EAR 계산
 # ══════════════════════════════════════════
 def calculate_ear(eye_pts: np.ndarray) -> float:
     v1 = dist.euclidean(eye_pts[1], eye_pts[5])
@@ -352,6 +379,9 @@ def calculate_ear(eye_pts: np.ndarray) -> float:
     h  = dist.euclidean(eye_pts[0], eye_pts[3])
     return (v1 + v2) / (2.0 * h) if h != 0 else 0.0
 
+# ══════════════════════════════════════════
+# 4. EMA 스무딩
+# ══════════════════════════════════════════
 class EMAFilter:
     def __init__(self, alpha: float):
         self.alpha  = alpha
@@ -365,6 +395,9 @@ class EMAFilter:
     def value(self):
         return self._value if self._value is not None else 0.0
 
+# ══════════════════════════════════════════
+# 5. PERCLOS 계산기
+# ══════════════════════════════════════════
 class PerclosCalculator:
     def __init__(self, fps: float, window_sec: float, eye_ratio: float):
         self.history   = deque(maxlen=int(fps * window_sec))
@@ -378,9 +411,13 @@ class PerclosCalculator:
         return closed / len(self.history)
 
     def fast_recover(self, ear: float, n: int = 10):
+        """눈이 다시 열렸을 때 현재 EAR로 N프레임을 채워 히스토리를 빠르게 희석."""
         for _ in range(n):
             self.history.append(ear)
 
+# ══════════════════════════════════════════
+# 6. 적응형 임계값 — ② IQR 캘리브레이션 필터 포함
+# ══════════════════════════════════════════
 class AdaptiveThreshold:
     def __init__(self, calib_sec, recalib_interval, recalib_window_sec, fps, max_drift):
         self.calib_sec        = calib_sec
@@ -397,7 +434,9 @@ class AdaptiveThreshold:
 
     @staticmethod
     def _iqr_filter(data: list, factor: float) -> list:
-        if len(data) < 4: return data
+        """IQR 기반 이상치 제거 — 눈 감은 프레임의 낮은 EAR 값 제거"""
+        if len(data) < 4:
+            return data
         arr = np.array(data)
         q1, q3 = np.percentile(arr, 25), np.percentile(arr, 75)
         iqr    = q3 - q1
@@ -405,12 +444,14 @@ class AdaptiveThreshold:
         filtered = arr[(arr >= lo) & (arr <= hi)].tolist()
         removed  = len(data) - len(filtered)
         if removed:
-            print(f"[캘리브레이션] IQR 필터: {removed}개 이상치(감은 눈 등) 제거 (유효 범위 {lo:.3f} ~ {hi:.3f})")
+            print(f"[캘리브레이션] IQR 필터: {removed}개 이상치 제거 "
+                  f"(유효 범위 {lo:.3f} ~ {hi:.3f})")
         return filtered if filtered else data
 
     def update(self, ear: float, perclos: float) -> bool:
         now = time.time()
 
+        # ── 초기 캘리브레이션 수집 ──
         if not self.is_calibrated:
             if self._calib_start is None:
                 self._calib_start = now
@@ -419,17 +460,21 @@ class AdaptiveThreshold:
                     self.calib_buf.append(ear)
                 return False
 
+            # ② IQR 필터 후 baseline 계산
             clean          = self._iqr_filter(self.calib_buf, CALIB_IQR_FACTOR)
             self.baseline  = float(np.mean(clean))
             self.threshold = self.baseline * 0.75
             self.is_calibrated = True
             self._last_recalib = now
-            print(f"[캘리브레이션 완료] 샘플={len(clean)}, baseline={self.baseline:.4f}, threshold={self.threshold:.4f}")
+            print(f"[캘리브레이션 완료] 샘플={len(clean)}, "
+                  f"baseline={self.baseline:.4f}, threshold={self.threshold:.4f}")
             return True
 
+        # ── 장기 버퍼 축적 (정상 상태일 때만) ──
         if perclos < 0.10 and ear > 0:
             self.long_term_buf.append(ear)
 
+        # ── 주기적 재보정 ──
         if now - self._last_recalib >= self.recalib_interval:
             if len(self.long_term_buf) > 30:
                 new_baseline = float(np.mean(self.long_term_buf))
@@ -437,28 +482,49 @@ class AdaptiveThreshold:
                 if drift <= self.max_drift:
                     self.baseline  = new_baseline
                     self.threshold = self.baseline * 0.75
-                    print(f"[재보정 완료] baseline={self.baseline:.4f}, threshold={self.threshold:.4f}")
+                    print(f"[재보정] baseline={self.baseline:.4f}, "
+                          f"threshold={self.threshold:.4f}")
+                else:
+                    print(f"[재보정 스킵] drift={drift:.2%} > 허용 {self.max_drift:.2%}")
             self._last_recalib = now
 
         return True
 
     def calib_remaining(self) -> float:
-        if self._calib_start is None: return self.calib_sec
+        if self._calib_start is None:
+            return self.calib_sec
         return max(0.0, self.calib_sec - (time.time() - self._calib_start))
 
+
+
 # ══════════════════════════════════════════
-# 4. 신호 워치독
+# 7. ③ 신호 워치독
 # ══════════════════════════════════════════
 class SignalWatchdog:
+    """
+    세 가지 잘못된 신호를 독립적으로 카운트.
+    어느 하나라도 WATCHDOG_THRESHOLD 이상이면 프로세스를 재시작.
+
+    감시 대상
+    ─────────
+    CAM_FAIL      : 연속 카메라 프레임 드롭이 WATCHDOG_CAM_FAIL_LIMIT 초과
+    EAR_INVALID   : EAR 값이 물리적으로 불가능한 범위 (≤0 or ≥1.0)
+    PROCESS_EXCEPT: 메인 루프에서 예외 발생
+    """
+
     SIGNAL_TYPES = ("CAM_FAIL", "EAR_INVALID", "PROCESS_EXCEPT")
 
     def __init__(self):
         self._counts    = {s: 0 for s in self.SIGNAL_TYPES}
-        self._last_err  = {s: 0.0 for s in self.SIGNAL_TYPES}
+        self._last_err  = {s: 0.0 for s in self.SIGNAL_TYPES}  # 마지막 오류 시각
         self._lock      = threading.Lock()
 
+    # ── 공개 API ──────────────────────────────
+
     def record(self, signal_type: str):
-        if signal_type not in self.SIGNAL_TYPES: return
+        """잘못된 신호 1회 기록. 임계값 도달 시 즉시 재시작."""
+        if signal_type not in self.SIGNAL_TYPES:
+            return
         with self._lock:
             self._reset_if_expired(signal_type)
             self._counts[signal_type] += 1
@@ -466,10 +532,12 @@ class SignalWatchdog:
             count = self._counts[signal_type]
 
         print(f"⚠️  [워치독] {signal_type} 오류 {count}/{WATCHDOG_THRESHOLD}회")
+
         if count >= WATCHDOG_THRESHOLD:
             self._restart(signal_type)
 
     def clear(self, signal_type: str):
+        """정상 신호 수신 시 해당 타입 카운트 초기화."""
         with self._lock:
             self._counts[signal_type]   = 0
             self._last_err[signal_type] = 0.0
@@ -478,15 +546,21 @@ class SignalWatchdog:
         with self._lock:
             return dict(self._counts)
 
+    # ── 내부 메서드 ───────────────────────────
+
     def _reset_if_expired(self, signal_type: str):
+        """마지막 오류 후 WATCHDOG_RESET_SEC이 지나면 카운트 리셋."""
         last = self._last_err[signal_type]
         if last > 0 and (time.time() - last) >= WATCHDOG_RESET_SEC:
-            print(f"[워치독] {signal_type} 카운트 만료 초기화")
+            print(f"[워치독] {signal_type} 카운트 만료 리셋 "
+                  f"({self._counts[signal_type]} → 0)")
             self._counts[signal_type]   = 0
             self._last_err[signal_type] = 0.0
 
     def _restart(self, trigger: str):
-        print(f"\n🔁 [워치독] {trigger} 오류 임계값 도달 → 프로세스 자동 재시작\n")
+        """현재 프로세스를 동일 인자로 재시작 (os.execv)."""
+        print(f"\n🔁 [워치독] {trigger} 오류 {WATCHDOG_THRESHOLD}회 도달 → 프로세스 재시작\n")
+        # 블루투스 안전 종료
         global sock, is_running
         is_running = False
         with sock_lock:
@@ -497,10 +571,12 @@ class SignalWatchdog:
                 except: pass
         cv2.destroyAllWindows()
         time.sleep(0.5)
+        # 동일 스크립트를 동일 인자로 교체 실행
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+
 # ══════════════════════════════════════════
-# 5. 오버레이 및 메인 루프
+# 8. 화면 오버레이
 # ══════════════════════════════════════════
 STATE_COLORS = {
     "OFF"        : (50,  205, 50),
@@ -518,74 +594,98 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
     cv2.putText(frame, f"FPS {int(fps)}", (10, 38),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
 
+    # 블루투스 / 시뮬레이션 상태 표시
     with sim_mode_lock:
         is_sim = sim_mode
     if is_sim:
+        # 시뮬레이션 모드: 깜박이는 노란 배지
         blink_on = int(time.time() * 2) % 2 == 0
         cv2.putText(frame, "SIM MODE", (w - 160, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255) if blink_on else (0, 120, 180), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (0, 200, 255) if blink_on else (0, 120, 180), 2)
     else:
         cv2.putText(frame, "BT:ON" if bt_ok else "BT:OFF", (w - 120, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50, 205, 50) if bt_ok else (0, 0, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (50, 205, 50) if bt_ok else (0, 0, 255), 2)
 
     if not is_calibrated:
         cv2.putText(frame, f"CALIBRATING... {calib_rem:.1f}s",
                     (w // 2 - 180, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 220, 220), 2)
         return
 
+    # 상태
     cv2.putText(frame, state, (w // 2 - 120, 42),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, STATE_COLORS.get(state, (255, 255, 255)), 3)
 
+    # 하단 정보 바
     bar_y = h - 100
     cv2.rectangle(frame, (0, bar_y - 5), (w, h), (20, 20, 20), -1)
 
+    # PERCLOS 게이지
     pbar_w = int(min(perclos, 1.0) * (w - 20))
-    cv2.rectangle(frame, (10, bar_y + 5), (10 + pbar_w, bar_y + 22), STATE_COLORS.get(state, (50, 205, 50)), -1)
+    cv2.rectangle(frame, (10, bar_y + 5),
+                  (10 + pbar_w, bar_y + 22), STATE_COLORS.get(state, (50, 205, 50)), -1)
     cv2.rectangle(frame, (10, bar_y + 5), (w - 10, bar_y + 22), (120, 120, 120), 1)
     for ratio, lv_color in [(PERCLOS_LV1, (0, 165, 255)), (PERCLOS_LV2, (0, 0, 255))]:
         lx = int(ratio * (w - 20)) + 10
         cv2.line(frame, (lx, bar_y + 3), (lx, bar_y + 24), lv_color, 2)
-        
-    cv2.putText(frame, f"PERCLOS {perclos:.1%}", (10, bar_y + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-    cv2.putText(frame, f"EAR {ear:.3f}  THR {threshold:.3f}", (10, bar_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+    cv2.putText(frame, f"PERCLOS {perclos:.1%}",
+                (10, bar_y + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
+    # EAR / Threshold
+    cv2.putText(frame, f"EAR {ear:.3f}  THR {threshold:.3f}",
+                (10, bar_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+
+    # ③ 워치독 카운트 표시 (오류 1회 이상일 때만)
     wd_text_parts = []
     label_map = {"CAM_FAIL": "CAM", "EAR_INVALID": "EAR", "PROCESS_EXCEPT": "EXC"}
     for sig, cnt in wd_counts.items():
         if cnt > 0:
             wd_text_parts.append(f"{label_map[sig]}:{cnt}/{WATCHDOG_THRESHOLD}")
     if wd_text_parts:
-        cv2.putText(frame, "WD " + "  ".join(wd_text_parts), (10, bar_y + 78),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 1)
+        wd_text  = "WD " + "  ".join(wd_text_parts)
+        wd_color = (0, 165, 255) if max(wd_counts.values()) < WATCHDOG_THRESHOLD else (0, 0, 255)
+        cv2.putText(frame, wd_text, (10, bar_y + 78),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, wd_color, 1)
 
 def draw_no_face(frame, is_calibrated, missing_sec):
+    h, w = frame.shape[:2]
     if not is_calibrated:
-        cv2.putText(frame, "WAITING FOR FACE...", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 220, 220), 2)
+        cv2.putText(frame, "WAITING FOR FACE...", (30, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 220, 220), 2)
         return
     if missing_sec >= FACE_MISSING_DANGER_SEC:
-        cv2.putText(frame, "NO FACE — DANGER!", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        cv2.putText(frame, "NO FACE — DANGER!", (30, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
     else:
         cv2.putText(frame, f"FACE MISSING... {int(FACE_MISSING_DANGER_SEC - missing_sec)}s",
                     (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 2)
 
+# ══════════════════════════════════════════
+# 9. 메인 루프
+# ══════════════════════════════════════════
 def main():
     global target_state, is_running
 
     check_opencv_gstreamer()
+
     vs = CSICameraStream().start()
     time.sleep(2.0)
-    print("✅ CSI 카메라 파이프라인 활성화 완료")
+    print("✅ CSI 카메라 시작")
 
     face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=2,
+        max_num_faces=5,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5,
     )
 
     ema          = EMAFilter(EMA_ALPHA)
     perclos_calc = PerclosCalculator(FPS_TARGET, PERCLOS_WINDOW_SEC, PERCLOS_EYE_RATIO)
-    adaptive_thr = AdaptiveThreshold(CALIB_DURATION_SEC, RECALIB_INTERVAL, RECALIB_WINDOW_SEC, FPS_TARGET, RECALIB_MAX_DRIFT)
-    watchdog     = SignalWatchdog()
+    adaptive_thr = AdaptiveThreshold(
+        CALIB_DURATION_SEC, RECALIB_INTERVAL,
+        RECALIB_WINDOW_SEC, FPS_TARGET, RECALIB_MAX_DRIFT,
+    )
+    watchdog = SignalWatchdog()   # ③
 
     state                 = "OFF"
     prev_state            = "OFF"
@@ -593,13 +693,13 @@ def main():
     instant_closed_frames = 0
     prev_time             = time.time()
 
-    print("── 시스템 메인 감시 루프 가동 (종료 키: q) ──")
+    print("── 시작 (종료: q) ──")
 
     try:
         while True:
             frame = vs.read()
 
-            # ── 카메라 프레임 드롭 체크 ──
+            # ── ③ 카메라 프레임 드롭 감지 ──
             if frame is None or vs.consecutive_fail > WATCHDOG_CAM_FAIL_LIMIT:
                 watchdog.record("CAM_FAIL")
                 instant_closed_frames = 0
@@ -612,14 +712,14 @@ def main():
             fps       = 1.0 / max(curr_time - prev_time, 1e-6)
             prev_time = curr_time
 
-            # ① 화질을 고해상도(640, 360)로 스케일 업 및 랜드마크 분석 이미지 생성
-            small = cv2.resize(frame, (PROCESS_W, PROCESS_H))
-            rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            h, w, _ = frame.shape
+            small   = cv2.resize(frame, (320, 240))
+            rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
             try:
                 results = face_mesh.process(rgb)
             except Exception as e:
-                print(f"⚠️  MediaPipe core 예외 발생: {e}")
+                print(f"⚠️  MediaPipe 처리 예외: {e}")
                 watchdog.record("PROCESS_EXCEPT")
                 continue
 
@@ -629,25 +729,22 @@ def main():
             if results.multi_face_landmarks:
                 face_missing_start = 0.0
 
-                # 주 운전자 (가장 전면에 위치해 면적이 큰 얼굴) 탐색
+                # 가장 큰 얼굴(운전자) 선택
                 largest_face, max_area = None, 0.0
                 for face_lms in results.multi_face_landmarks:
-                    xs = [lm.x for lm in face_lms.landmark]
-                    ys = [lm.y for lm in face_lms.landmark]
+                    xs   = [lm.x for lm in face_lms.landmark]
+                    ys   = [lm.y for lm in face_lms.landmark]
                     area = (max(xs) - min(xs)) * (max(ys) - min(ys))
                     if area > max_area:
                         max_area, largest_face = area, face_lms
 
                 if largest_face:
-                    lms = largest_face.landmark
-                    
-                    # ⚠️ [핵심 버그 수정] 픽셀 복원 시 원본(w, h)이 아닌 MediaPipe 입력 해상도(PROCESS_W, PROCESS_H)를 곱해야 정확히 정렬됨
-                    left_pts  = np.array([(lms[i].x * PROCESS_W, lms[i].y * PROCESS_H) for i in LEFT_EYE])
-                    right_pts = np.array([(lms[i].x * PROCESS_W, lms[i].y * PROCESS_H) for i in RIGHT_EYE])
-                    
-                    raw_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
+                    lms       = largest_face.landmark
+                    left_pts  = np.array([(lms[i].x * w, lms[i].y * h) for i in LEFT_EYE])
+                    right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
+                    raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
-                    # ── EAR 값 물리적 바운더리 검사 ──
+                    # ── ③ EAR 범위 유효성 검사 ──
                     if raw_ear <= 0.0 or raw_ear >= 1.0:
                         watchdog.record("EAR_INVALID")
                     else:
@@ -660,15 +757,16 @@ def main():
                         if is_cal and adaptive_thr.threshold:
                             perclos = perclos_calc.update(ema_ear, adaptive_thr.threshold)
 
-                            # 즉각 트리거 조건 연산
+                            # 즉각 트리거
                             if ema_ear < adaptive_thr.threshold * INSTANT_RATIO:
                                 instant_closed_frames += 1
                             else:
+                                # 경보 상태에서 눈이 다시 열렸으면 PERCLOS 히스토리 빠르게 희석
                                 if instant_closed_frames >= INSTANT_LV1_FRAMES:
                                     perclos_calc.fast_recover(ema_ear, n=10)
                                 instant_closed_frames = 0
 
-                            # 최종 상태 결정 판별식
+                            # 상태 판별
                             if instant_closed_frames >= INSTANT_LV2_FRAMES or perclos >= PERCLOS_LV2:
                                 state = "LV2_DANGER"
                             elif instant_closed_frames >= INSTANT_LV1_FRAMES or perclos >= PERCLOS_LV1:
@@ -681,12 +779,15 @@ def main():
                 with sock_lock:
                     bt_ok = sock is not None
 
-                draw_overlay(small, state, fps, perclos, ema_ear,
-                             adaptive_thr.threshold or 0.0,
-                             adaptive_thr.is_calibrated, adaptive_thr.calib_remaining(),
-                             bt_ok, watchdog.counts())
+                draw_overlay(
+                    frame, state, fps, perclos, ema_ear,
+                    adaptive_thr.threshold or 0.0,
+                    adaptive_thr.is_calibrated,
+                    adaptive_thr.calib_remaining(),
+                    bt_ok, watchdog.counts(),
+                )
+
             else:
-                # 얼굴 유실 예외 처리
                 instant_closed_frames = 0
                 adaptive_thr.update(0.0, 0.0)
 
@@ -694,29 +795,34 @@ def main():
                     face_missing_start = curr_time
                 missing_sec = curr_time - face_missing_start
 
-                state = ("LV2_DANGER" if adaptive_thr.is_calibrated and missing_sec >= FACE_MISSING_DANGER_SEC else "OFF")
+                state = ("LV2_DANGER"
+                         if adaptive_thr.is_calibrated and missing_sec >= FACE_MISSING_DANGER_SEC
+                         else "OFF")
 
                 with sock_lock:
                     bt_ok = sock is not None
 
-                draw_no_face(small, adaptive_thr.is_calibrated, missing_sec)
-                draw_overlay(small, state, fps, 0.0, 0.0, 0.0,
-                             adaptive_thr.is_calibrated, adaptive_thr.calib_remaining(),
-                             bt_ok, watchdog.counts())
+                draw_no_face(frame, adaptive_thr.is_calibrated, missing_sec)
+                draw_overlay(
+                    frame, state, fps, 0.0, 0.0, 0.0,
+                    adaptive_thr.is_calibrated,
+                    adaptive_thr.calib_remaining(),
+                    bt_ok, watchdog.counts(),
+                )
 
-            # ── 상태 전송용 인터페이스 트리거 ──
+            # 블루투스 상태 동기화
             if state != prev_state:
-                print(f"[상태 변경 트리거] {prev_state} → {state} (PERCLOS={perclos:.1%})")
+                print(f"[상태 변경] {prev_state} → {state}  (PERCLOS={perclos:.1%})")
                 with sim_mode_lock:
                     is_sim = sim_mode
                 if is_sim:
-                    _sim_log(state, perclos)
+                    _sim_log(state, perclos)   # 시뮬레이션: 콘솔 기록
                 else:
-                    with bt_lock:
+                    with bt_lock:              # 실제 모드: ESP32 전송
                         target_state = state
                 prev_state = state
 
-            cv2.imshow("Jetson Drowsiness System", small)
+            cv2.imshow("Jetson Drowsiness System", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -730,10 +836,13 @@ def main():
                 try: sock.close()
                 except: pass
         cv2.destroyAllWindows()
-        print("── 졸음 감지 시스템이 정상 안전 종료되었습니다 ──")
+        print("── 종료 ──")
 
+# ══════════════════════════════════════════
+# 10. 진입점
+# ══════════════════════════════════════════
 if __name__ == "__main__":
-    print("=== 젯슨 나노 졸음 감지 시스템 가동 ===")
+    print("=== 젯슨 나노 졸음 감지 시스템 (보완 버전) 시작 ===")
     _init_bluetooth()
     threading.Thread(target=bluetooth_thread, daemon=True).start()
     main()
