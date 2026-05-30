@@ -35,9 +35,9 @@ FPS_TARGET   = 30
 FLIP_METHOD  = 0
 
 # 블루투스
-ESP32_MAC_ADDR        = "F4:2D:C9:89:B1:A6"
+ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
 BT_CHANNEL            = 1
-BT_TIMEOUT            = 0.2
+BT_TIMEOUT            = 5.0
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
 BT_ACK_RETRY          = 10     # ACK 재시도 횟수
 BT_RECONNECT_INTERVAL = 5.0    # ① 재연결 시도 간격 (초)
@@ -153,6 +153,11 @@ target_state = "OFF"
 is_running   = True
 bt_lock      = threading.Lock()
 
+# 시뮬레이션 모드
+sim_mode      = False         # BT 연결 실패 시 True로 전환
+sim_mode_lock = threading.Lock()
+_sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
+
 # ESP32 비정상 응답 카운터
 _bt_abnormal_count    = 0
 _bt_last_abnormal_time = 0.0
@@ -201,6 +206,43 @@ def _bt_restart():
     time.sleep(0.5)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
+def _enter_sim_mode(reason: str):
+    """BT 연결 불가 → 시뮬레이션 모드 진입."""
+    global sim_mode
+    with sim_mode_lock:
+        if sim_mode:
+            return
+        sim_mode = True
+    print(f"\n{'='*50}")
+    print(f"⚠️  [시뮬레이션 모드] 블루투스 연결 실패 — ESP32 없이 동작")
+    print(f"   원인: {reason}")
+    print(f"   상태 변경은 콘솔에 출력됩니다.")
+    print(f"   백그라운드에서 {BT_RECONNECT_INTERVAL}초마다 재연결 시도 중...")
+    print(f"{'='*50}\n")
+
+def _exit_sim_mode():
+    """BT 재연결 성공 → 실제 모드로 복귀."""
+    global sim_mode
+    with sim_mode_lock:
+        if not sim_mode:
+            return
+        sim_mode = False
+    print(f"\n{'='*50}")
+    print(f"✅ [시뮬레이션 모드 종료] 블루투스 재연결 성공 — 실제 모드로 전환")
+    if _sim_log_buf:
+        print(f"   시뮬레이션 중 상태 변경 기록 ({len(_sim_log_buf)}건):")
+        for entry in _sim_log_buf[-10:]:   # 최근 10건만 출력
+            print(f"     {entry}")
+    print(f"{'='*50}\n")
+    _sim_log_buf.clear()
+
+def _sim_log(state: str, perclos: float):
+    """시뮬레이션 모드에서 상태 변경을 콘솔 + 버퍼에 기록."""
+    timestamp = time.strftime("%H:%M:%S")
+    entry = f"[{timestamp}] 상태={state}  PERCLOS={perclos:.1%}"
+    _sim_log_buf.append(entry)
+    print(f"📋 [SIM] {entry}")
+
 def _create_socket():
     """소켓 생성 + 연결 시도. 실패 시 None 반환."""
     try:
@@ -217,6 +259,8 @@ def _init_bluetooth():
     global sock
     with sock_lock:
         sock = _create_socket()
+    if sock is None:
+        _enter_sim_mode("초기 연결 실패")
 
 def _send_command(cmd_text: str) -> bool:
     """
@@ -276,12 +320,15 @@ def bluetooth_thread():
             now = time.time()
             if now - last_reconnect >= BT_RECONNECT_INTERVAL:
                 print("🔄 블루투스 재연결 시도...")
+                new_sock = _create_socket()
                 with sock_lock:
-                    sock = _create_socket()
+                    sock = new_sock
                 last_reconnect = now
                 if sock:
-                    # 재연결 후 현재 상태 강제 재전송
-                    current_state = "FORCE_RESEND"
+                    _exit_sim_mode()               # 재연결 성공 → 시뮬레이션 종료
+                    current_state = "FORCE_RESEND" # 현재 상태 즉시 재전송
+                else:
+                    _enter_sim_mode("재연결 실패")  # 여전히 실패 → 유지
             time.sleep(0.5)
             continue
 
@@ -363,6 +410,11 @@ class PerclosCalculator:
         closed = sum(1 for e in self.history if e < threshold * self.eye_ratio)
         return closed / len(self.history)
 
+    def fast_recover(self, ear: float, n: int = 10):
+        """눈이 다시 열렸을 때 현재 EAR로 N프레임을 채워 히스토리를 빠르게 희석."""
+        for _ in range(n):
+            self.history.append(ear)
+
 # ══════════════════════════════════════════
 # 6. 적응형 임계값 — ② IQR 캘리브레이션 필터 포함
 # ══════════════════════════════════════════
@@ -442,6 +494,17 @@ class AdaptiveThreshold:
         if self._calib_start is None:
             return self.calib_sec
         return max(0.0, self.calib_sec - (time.time() - self._calib_start))
+
+    def reset(self):
+        """새 탑승자를 위한 캘리브레이션 초기화 (R 키)."""
+        self.calib_buf     = []
+        self.long_term_buf.clear()
+        self.threshold     = None
+        self.baseline      = None
+        self.is_calibrated = False
+        self._calib_start  = None
+        self._last_recalib = None
+        print("[캘리브레이션 초기화] 새 탑승자 캘리브레이션 시작")
 
 
 
@@ -542,10 +605,19 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
     cv2.putText(frame, f"FPS {int(fps)}", (10, 38),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
 
-    # ① 블루투스 연결 상태
-    cv2.putText(frame, "BT:ON" if bt_ok else "BT:OFF", (w - 110, 38),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                (50, 205, 50) if bt_ok else (0, 0, 255), 2)
+    # 블루투스 / 시뮬레이션 상태 표시
+    with sim_mode_lock:
+        is_sim = sim_mode
+    if is_sim:
+        # 시뮬레이션 모드: 깜박이는 노란 배지
+        blink_on = int(time.time() * 2) % 2 == 0
+        cv2.putText(frame, "SIM MODE", (w - 160, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (0, 200, 255) if blink_on else (0, 120, 180), 2)
+    else:
+        cv2.putText(frame, "BT:ON" if bt_ok else "BT:OFF", (w - 120, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (50, 205, 50) if bt_ok else (0, 0, 255), 2)
 
     if not is_calibrated:
         cv2.putText(frame, f"CALIBRATING... {calib_rem:.1f}s",
@@ -587,7 +659,9 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
         cv2.putText(frame, wd_text, (10, bar_y + 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, wd_color, 1)
 
-def draw_no_face(frame, is_calibrated, missing_sec):
+    # R키 안내
+    cv2.putText(frame, "R: recalibrate", (10, h - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
     h, w = frame.shape[:2]
     if not is_calibrated:
         cv2.putText(frame, "WAITING FOR FACE...", (30, 90),
@@ -613,9 +687,10 @@ def main():
     print("✅ CSI 카메라 시작")
 
     face_mesh = mp_face_mesh.FaceMesh(
-        max_num_faces=5,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.7,
     )
 
     ema          = EMAFilter(EMA_ALPHA)
@@ -652,7 +727,7 @@ def main():
             prev_time = curr_time
 
             h, w, _ = frame.shape
-            small   = cv2.resize(frame, (320, 240))
+            small   = cv2.resize(frame, (640, 480))
             rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
             try:
@@ -700,6 +775,9 @@ def main():
                             if ema_ear < adaptive_thr.threshold * INSTANT_RATIO:
                                 instant_closed_frames += 1
                             else:
+                                # 경보 상태에서 눈이 다시 열렸으면 PERCLOS 히스토리 빠르게 희석
+                                if instant_closed_frames >= INSTANT_LV1_FRAMES:
+                                    perclos_calc.fast_recover(ema_ear, n=10)
                                 instant_closed_frames = 0
 
                             # 상태 판별
@@ -749,13 +827,31 @@ def main():
             # 블루투스 상태 동기화
             if state != prev_state:
                 print(f"[상태 변경] {prev_state} → {state}  (PERCLOS={perclos:.1%})")
-                with bt_lock:
-                    target_state = state
+                with sim_mode_lock:
+                    is_sim = sim_mode
+                if is_sim:
+                    _sim_log(state, perclos)   # 시뮬레이션: 콘솔 기록
+                else:
+                    with bt_lock:              # 실제 모드: ESP32 전송
+                        target_state = state
                 prev_state = state
 
             cv2.imshow("Jetson Drowsiness System", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            elif key == ord("r"):
+                # 새 탑승자 → 캘리브레이션 전체 리셋
+                adaptive_thr.reset()
+                ema._value            = None
+                perclos_calc.history.clear()
+                instant_closed_frames = 0
+                state                 = "OFF"
+                prev_state            = "OFF"
+                face_missing_start    = 0.0
+                with bt_lock:
+                    target_state = "OFF"
+                print("🔄 [R키] 새 탑승자 캘리브레이션 시작 — 정면을 바라봐 주세요")
 
     finally:
         is_running = False
