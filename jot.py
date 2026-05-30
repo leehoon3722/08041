@@ -410,6 +410,11 @@ class PerclosCalculator:
         closed = sum(1 for e in self.history if e < threshold * self.eye_ratio)
         return closed / len(self.history)
 
+    def fast_recover(self, ear: float, n: int = 10):
+        """눈이 다시 열렸을 때 현재 EAR로 N프레임을 채워 히스토리를 빠르게 희석."""
+        for _ in range(n):
+            self.history.append(ear)
+
 # ══════════════════════════════════════════
 # 6. 적응형 임계값 — ② IQR 캘리브레이션 필터 포함
 # ══════════════════════════════════════════
@@ -735,8 +740,9 @@ def main():
 
                 if largest_face:
                     lms       = largest_face.landmark
-                    left_pts  = np.array([(lms[i].x * w, lms[i].y * h) for i in LEFT_EYE])
-                    right_pts = np.array([(lms[i].x * w, lms[i].y * h) for i in RIGHT_EYE])
+                    # 화면 비율(w, h) 곱셈을 제거하고, 깊이(z)를 추가하여 3D 좌표로 추출
+                    left_pts  = np.array([(lms[i].x, lms[i].y, lms[i].z) for i in LEFT_EYE])
+                    right_pts = np.array([(lms[i].x, lms[i].y, lms[i].z) for i in RIGHT_EYE])
                     raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
                     # ── ③ EAR 범위 유효성 검사 ──
@@ -756,6 +762,9 @@ def main():
                             if ema_ear < adaptive_thr.threshold * INSTANT_RATIO:
                                 instant_closed_frames += 1
                             else:
+                                # 경보 상태에서 눈이 다시 열렸으면 PERCLOS 히스토리 빠르게 희석
+                                if instant_closed_frames >= INSTANT_LV1_FRAMES:
+                                    perclos_calc.fast_recover(ema_ear, n=10)
                                 instant_closed_frames = 0
 
                             # 상태 판별
