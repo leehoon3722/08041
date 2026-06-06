@@ -24,7 +24,7 @@ FLIP_METHOD  = 0
 # 블루투스
 ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
 BT_CHANNEL            = 1
-BT_TIMEOUT            = 5.0
+BT_TIMEOUT            = 10.0
 BT_HEARTBEAT_INTERVAL = 1.0    
 BT_ACK_RETRY          = 10     
 BT_RECONNECT_INTERVAL = 5.0    
