@@ -695,6 +695,11 @@ def main():
     instant_closed_frames = 0
     prev_time             = time.time()
 
+    # 🚀 [추가된 부분] 프레임 스킵을 위한 설정
+    SKIP_PERIOD = 2  # 2프레임당 1번만 MediaPipe 연산 수행 (연산량 50% 감소)
+    frame_counter = SKIP_PERIOD - 1  # 첫 프레임부터 바로 연산되도록 초기값 설정
+    cached_results = None            # 이전 프레임의 결과값을 저장할 변수
+
     print("── 시작 (종료: q) ──")
 
     try:
@@ -718,17 +723,27 @@ def main():
             small   = cv2.resize(frame, (320, 240))
             rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-            try:
-                results = face_mesh.process(rgb)
-            except Exception as e:
-                print(f"⚠️  MediaPipe 처리 예외: {e}")
-                watchdog.record("PROCESS_EXCEPT")
-                continue
+            # 🚀 [수정된 부분] 프레임 스킵 로직 적용
+            frame_counter += 1
+            if frame_counter % SKIP_PERIOD == 0:
+                try:
+                    # 이번 프레임은 진짜로 연산
+                    results = face_mesh.process(rgb)
+                    cached_results = results  # 결과 저장
+                except Exception as e:
+                    print(f"⚠️  MediaPipe 처리 예외: {e}")
+                    watchdog.record("PROCESS_EXCEPT")
+                    continue
+                frame_counter = 0
+            else:
+                # 연산을 건너뛰는 프레임은 이전 얼굴 인식 결과를 그대로 재사용
+                results = cached_results
 
             ema_ear = ema.value
             perclos = 0.0
 
-            if results.multi_face_landmarks:
+            # 이후 코드는 기존과 완벽히 동일합니다.
+            if results and results.multi_face_landmarks:
                 face_missing_start = 0.0
 
                 # 가장 큰 얼굴(운전자) 선택
