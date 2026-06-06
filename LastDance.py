@@ -19,7 +19,7 @@ CAP_WIDTH    = 1280
 CAP_HEIGHT   = 720
 DISP_WIDTH   = 640
 DISP_HEIGHT  = 480
-FPS_TARGET   = 30
+FPS_TARGET   = 18
 FLIP_METHOD  = 0
 
 # 블루투스
@@ -44,7 +44,7 @@ PERCLOS_EYE_RATIO  = 0.80
 # 즉각 트리거
 INSTANT_RATIO      = 0.60
 INSTANT_LV1_FRAMES = 1
-INSTANT_LV2_FRAMES = 5
+INSTANT_LV2_FRAMES = 4
 
 # 캘리브레이션
 CALIB_DURATION_SEC = 5.0
@@ -61,7 +61,7 @@ FACE_MISSING_DANGER_SEC = 5.0
 # 워치독 (잘못된 신호 감지 → 프로세스 재시작)
 WATCHDOG_THRESHOLD      = 3      # 이 횟수 이상 잘못된 신호 → 재시작
 WATCHDOG_RESET_SEC      = 30.0   # 이 시간 동안 오류 없으면 카운트 초기화
-WATCHDOG_CAM_FAIL_LIMIT = 30     # 연속 카메라 드롭 프레임 수 기준
+WATCHDOG_CAM_FAIL_LIMIT = 45     # 연속 카메라 드롭 프레임 수 기준
 
 # MediaPipe 눈 랜드마크
 LEFT_EYE  = [362, 385, 387, 263, 373, 380]
@@ -695,11 +695,6 @@ def main():
     instant_closed_frames = 0
     prev_time             = time.time()
 
-    # 🚀 [추가된 부분] 프레임 스킵을 위한 설정
-    SKIP_PERIOD = 2  # 2프레임당 1번만 MediaPipe 연산 수행 (연산량 50% 감소)
-    frame_counter = SKIP_PERIOD - 1  # 첫 프레임부터 바로 연산되도록 초기값 설정
-    cached_results = None            # 이전 프레임의 결과값을 저장할 변수
-
     print("── 시작 (종료: q) ──")
 
     try:
@@ -723,27 +718,17 @@ def main():
             small   = cv2.resize(frame, (320, 240))
             rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-            # 🚀 [수정된 부분] 프레임 스킵 로직 적용
-            frame_counter += 1
-            if frame_counter % SKIP_PERIOD == 0:
-                try:
-                    # 이번 프레임은 진짜로 연산
-                    results = face_mesh.process(rgb)
-                    cached_results = results  # 결과 저장
-                except Exception as e:
-                    print(f"⚠️  MediaPipe 처리 예외: {e}")
-                    watchdog.record("PROCESS_EXCEPT")
-                    continue
-                frame_counter = 0
-            else:
-                # 연산을 건너뛰는 프레임은 이전 얼굴 인식 결과를 그대로 재사용
-                results = cached_results
+            try:
+                results = face_mesh.process(rgb)
+            except Exception as e:
+                print(f"⚠️  MediaPipe 처리 예외: {e}")
+                watchdog.record("PROCESS_EXCEPT")
+                continue
 
             ema_ear = ema.value
             perclos = 0.0
 
-            # 이후 코드는 기존과 완벽히 동일합니다.
-            if results and results.multi_face_landmarks:
+            if results.multi_face_landmarks:
                 face_missing_start = 0.0
 
                 # 가장 큰 얼굴(운전자) 선택
