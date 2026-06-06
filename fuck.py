@@ -125,7 +125,7 @@ target_state = "OFF"
 is_running   = True
 bt_lock      = threading.Lock()
 
-sim_mode      = False
+sim_mode      = True
 sim_mode_lock = threading.Lock()
 _sim_log_buf  = []
 
