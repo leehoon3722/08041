@@ -14,13 +14,13 @@ import os
 # ══════════════════════════════════════════
 
 # CSI 카메라
-SENSOR_ID    = 0
-CAP_WIDTH    = 1280
-CAP_HEIGHT   = 720
-DISP_WIDTH   = 640
-DISP_HEIGHT  = 480
-FPS_TARGET   = 30
-FLIP_METHOD  = 0
+SENSOR_ID   = 0
+CAP_WIDTH   = 640   # 1280에서 640으로 축소 (센서 촬영 해상도 자체를 낮춤)
+CAP_HEIGHT  = 480   # 720에서 480으로 축소
+DISP_WIDTH  = 640   # 연산 및 디스플레이 해상도 통일
+DISP_HEIGHT = 480   # 연산 및 디스플레이 해상도 통일
+FPS_TARGET  = 30
+FLIP_METHOD = 0
 
 # 블루투스
 ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
@@ -142,7 +142,7 @@ is_running   = True
 bt_lock      = threading.Lock()
 
 # 시뮬레이션 모드
-sim_mode      = False         # BT 연결 실패 시 True로 전환
+sim_mode      = True        # BT 연결 실패 시 True로 전환
 sim_mode_lock = threading.Lock()
 _sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
 
