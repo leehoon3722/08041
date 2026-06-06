@@ -715,7 +715,7 @@ def main():
             prev_time = curr_time
 
             h, w, _ = frame.shape
-            rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            rgb     = cv2.cvtColor(cv2.COLOR_BGR2RGB)
 
             try:
                 results = face_mesh.process(rgb)
