@@ -15,8 +15,8 @@ import os
 
 # CSI 카메라
 SENSOR_ID    = 0
-CAP_WIDTH    = 640
-CAP_HEIGHT   = 480
+CAP_WIDTH    = 1280
+CAP_HEIGHT   = 720
 DISP_WIDTH   = 640
 DISP_HEIGHT  = 480
 FPS_TARGET   = 18
@@ -715,7 +715,6 @@ def main():
             prev_time = curr_time
 
             h, w, _ = frame.shape
-            small   = cv2.resize(frame, (320, 240))
             rgb     = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
             try:
@@ -743,8 +742,8 @@ def main():
                 if largest_face:
                     lms       = largest_face.landmark
                     # 화면 비율(w, h) 곱셈을 제거하고, 깊이(z)를 추가하여 3D 좌표로 추출
-                    left_pts  = np.array([(lms[i].x, lms[i].y, lms[i].z) for i in LEFT_EYE])
-                    right_pts = np.array([(lms[i].x, lms[i].y, lms[i].z) for i in RIGHT_EYE])
+                    left_pts  = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in LEFT_EYE])
+                    right_pts = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in RIGHT_EYE])
                     raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
 
                     # ── ③ EAR 범위 유효성 검사 ──
