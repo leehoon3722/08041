@@ -610,7 +610,7 @@ def main():
         print("── 종료 ──")
 
 if __name__ == "__main__":
-    print("=== 젯슨 나노 졸음 감지 시스템 (초경량 Lite + Auto Calib + Frame Skip) 시작 ===")
+    print("=== 젯슨 나노 졸음운전 감지 시스템 시작 ===")
     _init_bluetooth()
     threading.Thread(target=bluetooth_thread, daemon=True).start()
     main()
