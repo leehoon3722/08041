@@ -32,13 +32,13 @@ BT_ABNORMAL_THRESHOLD = 3
 BT_ABNORMAL_RESET_SEC = 30.0   
 
 # EAR 캘리브레이션 및 졸음 판별 파라미터
-CALIB_SEC         = 5.0   # 초기 캘리브레이션 시간 (초)
-CALIB_RATIO       = 0.75  # 기준 EAR의 75%를 눈 감김으로 판단
-MIN_EAR_TH        = 0.18  # 임계값 하한선 방어
-MAX_EAR_TH        = 0.35  # 임계값 상한선 방어
+CALIB_SEC         = 5.0   
+CALIB_RATIO       = 0.75  
+MIN_EAR_TH        = 0.18  
+MAX_EAR_TH        = 0.35  
 
-CLOSED_FRAMES_LV1 = 9   # 18 FPS 기준 약 0.5초 연속 눈 감음 -> 1단계 경고
-CLOSED_FRAMES_LV2 = 27  # 18 FPS 기준 약 1.5초 연속 눈 감음 -> 2단계 위험
+CLOSED_FRAMES_LV1 = 9   
+CLOSED_FRAMES_LV2 = 27  
 
 # 얼굴 없음 → 위험
 FACE_MISSING_DANGER_SEC = 5.0
@@ -379,18 +379,15 @@ def draw_overlay(frame, state, fps, ear, threshold, closed_frames, bt_ok, wd_cou
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                     (50, 205, 50) if bt_ok else (0, 0, 255), 2)
 
-    # 상단 상태 텍스트
     if not is_calibrated:
         cv2.putText(frame, "CALIBRATING", (w // 2 - 120, 42),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
-        # 화면 중앙 캘리브레이션 카운트다운
         cv2.putText(frame, f"Please look at the camera... {int(calib_remain)}s", 
                     (w // 2 - 220, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     else:
         cv2.putText(frame, state, (w // 2 - 120, 42),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, STATE_COLORS.get(state, (255, 255, 255)), 3)
 
-    # 하단 정보 바
     bar_y = h - 60
     cv2.rectangle(frame, (0, bar_y - 5), (w, h), (20, 20, 20), -1)
 
@@ -441,11 +438,15 @@ def main():
     closed_frames      = 0      
     prev_time          = time.time()
 
-    # 캘리브레이션 관련 변수
     is_calibrated      = False
     calib_start_time   = 0.0
     calib_ear_list     = []
-    ear_threshold      = 0.25  # 기본값
+    ear_threshold      = 0.25
+
+    # ──────── 추가된 프레임 스킵용 변수 ────────
+    frame_counter      = 0
+    last_raw_ear       = 0.0
+    last_face_found    = False
 
     print("── 시작 (R: 수동 캘리브레이션, Q: 종료) ──")
 
@@ -466,84 +467,95 @@ def main():
             prev_time = curr_time
 
             h, w, _ = frame.shape
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # ──────── 2프레임당 1번만 연산 수행 ────────
+            frame_counter += 1
+            process_this_frame = (frame_counter % 2 == 0)
 
-            try:
-                results = face_mesh.process(rgb)
-            except Exception as e:
-                print(f"⚠️ MediaPipe 처리 예외: {e}")
-                watchdog.record("PROCESS_EXCEPT")
-                continue
+            if process_this_frame:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                try:
+                    results = face_mesh.process(rgb)
+                    last_face_found = False # 초기화 후 재확인
+                    
+                    if results.multi_face_landmarks:
+                        largest_face, max_area = None, 0.0
+                        
+                        for face_lms in results.multi_face_landmarks:
+                            xs   = [lm.x for lm in face_lms.landmark]
+                            ys   = [lm.y for lm in face_lms.landmark]
+                            area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                            if area > max_area:
+                                max_area, largest_face = area, face_lms
 
-            raw_ear = 0.0
+                        if largest_face:
+                            lms = largest_face.landmark
+                            left_pts  = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in LEFT_EYE])
+                            right_pts = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in RIGHT_EYE])
+                            
+                            # 새 EAR 계산 및 캐싱
+                            last_raw_ear = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
+
+                            if 0.0 < last_raw_ear < 1.0:
+                                last_face_found = True
+                                watchdog.clear("EAR_INVALID")
+                                watchdog.clear("PROCESS_EXCEPT")
+                            else:
+                                watchdog.record("EAR_INVALID")
+                except Exception as e:
+                    print(f"⚠️ MediaPipe 처리 예외: {e}")
+                    watchdog.record("PROCESS_EXCEPT")
+                    last_face_found = False
+
+            # ──────── 캐싱된 데이터를 기반으로 판별 및 UI 업데이트 (매 프레임) ────────
             calib_remain = 0.0
 
-            if results.multi_face_landmarks:
+            if last_face_found:
                 face_missing_start = 0.0
-                largest_face, max_area = None, 0.0
                 
-                for face_lms in results.multi_face_landmarks:
-                    xs   = [lm.x for lm in face_lms.landmark]
-                    ys   = [lm.y for lm in face_lms.landmark]
-                    area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-                    if area > max_area:
-                        max_area, largest_face = area, face_lms
+                # 캘리브레이션 진행
+                if not is_calibrated:
+                    if calib_start_time == 0.0:
+                        calib_start_time = curr_time
+                        calib_ear_list.clear()
 
-                if largest_face:
-                    lms = largest_face.landmark
-                    left_pts  = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in LEFT_EYE])
-                    right_pts = np.array([(lms[i].x * w, lms[i].y * h, lms[i].z * w) for i in RIGHT_EYE])
-                    raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
+                    elapsed = curr_time - calib_start_time
+                    calib_remain = max(0.0, CALIB_SEC - elapsed)
+                    
+                    # 연산된 프레임에서만 리스트에 추가 (중복 방지)
+                    if process_this_frame:
+                        calib_ear_list.append(last_raw_ear)
 
-                    if raw_ear <= 0.0 or raw_ear >= 1.0:
-                        watchdog.record("EAR_INVALID")
-                    else:
-                        watchdog.clear("EAR_INVALID")
-                        watchdog.clear("PROCESS_EXCEPT")
+                    if elapsed >= CALIB_SEC:
+                        if calib_ear_list:
+                            baseline = sum(calib_ear_list) / len(calib_ear_list)
+                            calculated_th = baseline * CALIB_RATIO
+                            ear_threshold = max(MIN_EAR_TH, min(MAX_EAR_TH, calculated_th))
+                            print(f"✅ [캘리브레이션 완료] 기준 EAR: {baseline:.3f} → 설정된 임계값: {ear_threshold:.3f}")
+                        
+                        is_calibrated = True
+                        closed_frames = 0
 
-                        # ──────── 캘리브레이션 진행 ────────
-                        if not is_calibrated:
-                            if calib_start_time == 0.0:
-                                calib_start_time = curr_time
-                                calib_ear_list.clear()
-
-                            elapsed = curr_time - calib_start_time
-                            calib_remain = max(0.0, CALIB_SEC - elapsed)
-                            calib_ear_list.append(raw_ear)
-
-                            if elapsed >= CALIB_SEC:
-                                if calib_ear_list:
-                                    baseline = sum(calib_ear_list) / len(calib_ear_list)
-                                    calculated_th = baseline * CALIB_RATIO
-                                    ear_threshold = max(MIN_EAR_TH, min(MAX_EAR_TH, calculated_th))
-                                    print(f"✅ [캘리브레이션 완료] 기준 EAR: {baseline:.3f} → 설정된 임계값: {ear_threshold:.3f}")
-                                
-                                is_calibrated = True
-                                closed_frames = 0
-
-                        # ──────── 일반 EAR 감지 로직 ────────
-                        else:
-                            if raw_ear < ear_threshold:
-                                closed_frames += 1
-                            else:
-                                closed_frames = 0
-
-                            if closed_frames >= CLOSED_FRAMES_LV2:
-                                state = "LV2_DANGER"
-                            elif closed_frames >= CLOSED_FRAMES_LV1:
-                                state = "LV1_WARN"
-                            else:
-                                state = "OFF"
+                # 일반 EAR 감지 로직
                 else:
-                    state = "OFF"
+                    if last_raw_ear < ear_threshold:
+                        closed_frames += 1
+                    else:
+                        closed_frames = 0
 
+                    if closed_frames >= CLOSED_FRAMES_LV2:
+                        state = "LV2_DANGER"
+                    elif closed_frames >= CLOSED_FRAMES_LV1:
+                        state = "LV1_WARN"
+                    else:
+                        state = "OFF"
+                        
                 with sock_lock:
                     bt_ok = sock is not None
-
-                draw_overlay(frame, state, fps, raw_ear, ear_threshold, closed_frames, bt_ok, watchdog.counts(), is_calibrated, calib_remain)
+                draw_overlay(frame, state, fps, last_raw_ear, ear_threshold, closed_frames, bt_ok, watchdog.counts(), is_calibrated, calib_remain)
 
             else:
-                # 얼굴을 놓쳤을 때 캘리브레이션 중이었다면 일시 정지용으로 타이머 갱신 (초기화는 안 함)
+                # 얼굴을 놓쳤을 때 캘리브레이션 중이었다면 타이머 갱신 (초기화는 안 함)
                 if not is_calibrated and calib_start_time != 0.0:
                     calib_start_time += (curr_time - prev_time)
 
@@ -572,7 +584,7 @@ def main():
 
             cv2.imshow("Jetson Drowsiness System (Lite + Auto_Calib)", frame)
 
-            # ──────── 키보드 이벤트 처리 ────────
+            # 키보드 이벤트 처리
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
@@ -598,7 +610,7 @@ def main():
         print("── 종료 ──")
 
 if __name__ == "__main__":
-    print("=== 젯슨 나노 졸음 감지 시스템 (초경량 Lite + Auto Calib) 시작 ===")
+    print("=== 젯슨 나노 졸음 감지 시스템 (초경량 Lite + Auto Calib + Frame Skip) 시작 ===")
     _init_bluetooth()
     threading.Thread(target=bluetooth_thread, daemon=True).start()
     main()
