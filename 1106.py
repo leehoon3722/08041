@@ -24,7 +24,7 @@
 [졸음 판정 — 시간 기준]
   EAR(눈 종횡비) → EMA 스무딩 → 운전자별 기준으로 '감김/뜸' 판정 (히스테리시스)
   · 연속 눈 감김 1초 이상 → LV1, 2초 이상 → LV2 (Euro NCAP 마이크로슬립 1~2초), 눈 뜨면 0.5초 뒤 해제
-  · PERCLOS: 최근 60초 중 눈 감긴 시간 비율 15% 이상 → LV1, 30% 이상 → LV2 (누적 졸음 경향)
+  · PERCLOS: 최근 30초 중 눈 감긴 시간 비율 15% 이상 → LV1, 30% 이상 → LV2 (누적 졸음 경향, 경고음은 2.5초만)
   · 얼굴이 5초 이상 안 보이면 LV2
   캘리브레이션 2단계: 정면 보고 눈 뜨기 3초 → 화면에 CLOSE EYES가 뜨면 눈 감기 2초
   → 뜬 눈·감은 눈 EAR의 중간을 감김 기준으로 (이 랜드마크 모델은 감아도 EAR이 0까지 안 내려감)
@@ -101,8 +101,9 @@ BT_ABNORMAL_THRESHOLD = 3      # ESP32 비정상 응답 N회 → 프로세스 �
 BT_ABNORMAL_RESET_SEC = 30.0   # 이 시간 동안 정상 응답이면 카운트 리셋
 BT_ACK_TIMEOUT        = 1.0    # 명령 1회당 ACK('A') 기다리는 시간 (초)
 BT_HB_ACK_TIMEOUT     = 0.5    # 하트비트 ACK 기다리는 시간 (초) — 타임아웃은 카운트 안 함
-BUZ_DEDUP_SEC         = 5.0    # 같은 번호의 !BUZ 재전송은 이 시간 안이면 소리 한 번만
-BUZ_BANNER_SEC        = 3.5    # 마지막 !BUZ 수신 후 화면 'HANDS ON WHEEL' 표시 시간 (ESP32 반복 간격 3초보다 조금 길게)
+BUZ_LV_ECHO_SEC       = 1.0    # LV1/LV2 명령 보낸 뒤 이 시간 안에 온 !BUZ# = ESP32가 LV 수신하고 보낸 것
+BUZ_PLAY_ON_LV        = True   # LV 때 온 !BUZ#도 알림음 재생 (False: LV 경고음만 — 알림음이 끼어들지 않음)
+BUZ_BANNER_SEC        = 3.5    # 핸들 이탈 !BUZ# 후 화면 'HANDS ON WHEEL' 표시 시간 (ESP32 반복 간격 3초보다 조금 길게)
 
 # EMA 스무딩
 EMA_ALPHA          = 0.40
@@ -113,10 +114,12 @@ EYE_CLOSED_LV2_SEC = 2.0    # 연속 2초 이상 감음 → LV2
 ALARM_HOLD_SEC     = 0.5    # 눈을 다시 뜬 뒤 이 시간이 지나면 감김 경보 해제
 
 # 졸음 판정 ② PERCLOS (누적 졸음 경향)
-PERCLOS_WINDOW_SEC = 60.0   # 최근 60초 동안
+PERCLOS_WINDOW_SEC = 30.0   # 최근 30초 동안 (60초는 눈을 떠도 게이지가 너무 늦게 내려감)
 PERCLOS_MIN_SEC    = 10.0   # 데이터가 10초 이상 쌓인 뒤부터 판정
 PERCLOS_LV1        = 0.15   # 눈 감긴 시간 비율 15% 이상 → LV1
 PERCLOS_LV2        = 0.30   # 30% 이상 → LV2
+PERCLOS_SOUND_SEC  = 2.5    # PERCLOS 경보는 경고음을 이 시간만 울리고 멈춤 (화면·LED 경고는 유지)
+                            # 연속 눈 감김·전방 주시 태만·얼굴 없음 경보는 지금처럼 계속 울림
 
 # 캘리브레이션 — 2단계 (정면 보고 눈 뜨기 → 눈 감기)
 CALIB_OPEN_SEC      = 3.0   # 뜬 눈 EAR 측정
@@ -146,7 +149,7 @@ OFFROAD_LV1_SEC     = 3.0    # 한 번에 3초 이상 이탈 → LV1 (Euro NCAP 
 OFFROAD_LV2_SEC     = 6.0    # 6초 이상 → LV2
 VATS_WINDOW_SEC     = 30.0   # 최근 30초 중
 VATS_LV1_SEC        = 10.0   # 이탈 누적 10초 이상 → LV1 (짧게 여러 번 보는 패턴)
-DRAW_HEAD_AXIS      = True   # 코끝에서 얼굴 방향 선 표시 (머리 자세 확인용, 끄려면 False)
+DRAW_HEAD_AXIS      = False   # 코끝에서 얼굴 방향 선 표시 (머리 자세 확인용, 끄려면 False)
 
 # 경고음 — 디스플레이 스피커(HDMI)로 재생 (ESP32 부저 대신)
 SOUND_ENABLE        = True
@@ -172,7 +175,7 @@ TRT_FP16        = True            # FP16 추론 (젯슨 나노 속도 향상)
 TRT_WORKSPACE   = 1 << 28         # 엔진 빌드 작업 메모리 256MB
 
 # 화면에 눈 랜드마크 12점 표시 (랜드마크가 눈에 제대로 붙는지 확인용, 끄려면 False)
-DRAW_EYE_POINTS = True
+DRAW_EYE_POINTS = False
 
 # 68점 랜드마크 눈 인덱스
 LEFT_EYE  = [36, 37, 38, 39, 40, 41]
@@ -316,9 +319,8 @@ _sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
 # ESP32 → Jetson 수신 처리 (수신은 bt_reader_thread 하나만 함)
 _ack_q          = queue.Queue()      # ESP32가 보낸 명령 응답 줄 ('A' 등)
 sock_write_lock = threading.Lock()   # 여러 스레드가 동시에 send 하지 않도록
-_buz_last_seq   = None
-_buz_last_seq_t = 0.0
-buz_last_time   = 0.0                # 마지막 !BUZ 수신 시각 (화면 배너용)
+_last_lv_cmd_t  = 0.0                # 마지막으로 LV1/LV2 명령을 보낸 시각
+buz_last_time   = 0.0                # 마지막 핸들 이탈 !BUZ 수신 시각 (화면 배너용)
 
 # ESP32 비정상 응답 카운터
 _bt_abnormal_count    = 0
@@ -483,6 +485,9 @@ def _send_command(cmd_text: str) -> bool:
                 return False
             try:
                 _drain_acks()                        # 늦게 도착한 이전 응답 버림
+                if cmd_text in ("LV1_WARN", "LV2_DANGER"):
+                    global _last_lv_cmd_t            # 보낸 시각 기록 — ESP32가 'A' 바로 뒤에 보내는 !BUZ# 구분용
+                    _last_lv_cmd_t = time.time()
                 _bt_write(s, packet)
             except Exception as e:
                 _drop_socket(s, f"전송 에러 {e}")
@@ -501,41 +506,41 @@ def _send_command(cmd_text: str) -> bool:
     return False
 
 # ──────────────────────────────────────────
-# ESP32 → Jetson 이벤트: !BUZ# (핸들 이탈 등) → 디스플레이 스피커
-#   ESP32 → Jetson : !BUZ:<번호>#      (예전 형식 !BUZ# 도 받음)
-#   Jetson → ESP32 : !BACK:<번호>#     (받았다는 확인. 번호 없는 !BUZ#엔 !BACK#)
-#   ESP32는 !BACK를 못 받으면 같은 번호로 다시 보냄 → 같은 번호는 소리를 한 번만 냄
+# ESP32 → Jetson 이벤트: !BUZ# → 디스플레이 스피커 알림음 (ESP32 코드는 그대로)
+#   ESP32가 !BUZ#를 보내는 경우 두 가지:
+#     ① 핸들 이탈 (1.5초 이상 손 뗌, 계속되면 3초마다)  → 알림음 + 화면 'HANDS ON WHEEL!'
+#     ② Jetson의 LV1/LV2 명령을 받았을 때 ("A\n" 바로 뒤에 옴) → BUZ_PLAY_ON_LV면 알림음
+#   Jetson은 !BUZ#에 응답을 보내지 않음:
+#     ESP32는 한 줄 읽고 남은 수신 데이터를 비우므로, 응답을 보내면 바로 뒤의 명령·하트비트가
+#     지워질 수 있음 → ACK 누락 → 비정상 카운트. 그래서 명령은 지금처럼 'A'를 받은 뒤에만 다음 것을 보냄.
 # ──────────────────────────────────────────
-def _on_buz(seq, s):
-    global _buz_last_seq, _buz_last_seq_t, buz_last_time
+def _on_buz(body: str):
+    global buz_last_time
     now = time.time()
-    try:
-        _bt_write(s, f"!BACK:{seq}#\n" if seq is not None else "!BACK#\n")
-    except Exception as e:
-        _drop_socket(s, f"BACK 전송 에러 {e}")
-    if seq is not None and seq == _buz_last_seq and now - _buz_last_seq_t < BUZ_DEDUP_SEC:
-        return                                       # 재전송된 같은 이벤트 → 소리 중복 안 함
-    _buz_last_seq, _buz_last_seq_t = seq, now
-    buz_last_time = now
-    print(f"🔔 [ESP32] !BUZ 수신 (번호 {seq}) → 디스플레이 스피커 알림음")
+    lv_echo = now - _last_lv_cmd_t < BUZ_LV_ECHO_SEC
+    if lv_echo:
+        print("🔔 [ESP32] !BUZ# 수신 (LV 경고 수신 응답)"
+              + (" → 알림음" if BUZ_PLAY_ON_LV else " → 무시 (LV 경고음 재생 중)"))
+        if not BUZ_PLAY_ON_LV:
+            return
+    else:
+        buz_last_time = now
+        print("🔔 [ESP32] !BUZ# 수신 (핸들 이탈) → 디스플레이 스피커 알림음")
     if _alarm_sound is not None:
         _alarm_sound.play_buz()
 
 def _handle_rx_line(line: str, s):
+    """ESP32에서 온 한 줄: !...# 이면 이벤트, 그 외('A' 등)는 명령 응답."""
     if not line:
         return
     if line.startswith("!") and line.endswith("#"):
         body = line[1:-1]
         if body.startswith("BUZ"):
-            seq = None
-            if ":" in body:
-                try: seq = int(body.split(":", 1)[1])
-                except ValueError: pass
-            _on_buz(seq, s)
+            _on_buz(body)
         else:
             print(f"[BT] 알 수 없는 ESP32 메시지: {line}")
         return
-    _ack_q.put(line)                                 # 'A' 같은 명령 응답
+    _ack_q.put(line)
 
 def bt_reader_thread():
     """ESP32에서 오는 데이터를 혼자 다 읽어서 줄 단위로 나눔 → 응답은 _ack_q, 이벤트는 바로 처리."""
@@ -1034,6 +1039,8 @@ class DrowsinessJudge:
         self.closed_dur   = 0.0        # 지금 이어지고 있는 눈 감김 시간 (초)
         self.perclos      = 0.0
         self.level        = 0
+        self.lv_close     = 0          # 연속 눈 감김 단계
+        self.lv_perc      = 0          # PERCLOS 단계
         self.cause        = ""         # 화면 표시용 원인
         self._hist        = deque()    # (시각, 시간 조각, 감김 여부) — 최근 PERCLOS_WINDOW_SEC
         self._t_total     = 0.0
@@ -1087,6 +1094,7 @@ class DrowsinessJudge:
         # ② PERCLOS
         lv_perc = 2 if self.perclos >= PERCLOS_LV2 else 1 if self.perclos >= PERCLOS_LV1 else 0
 
+        self.lv_close, self.lv_perc = lv_close, lv_perc
         self.level = max(lv_close, lv_perc)
         if lv_close > 0 and lv_close >= lv_perc:
             self.cause = f"EYES CLOSED {self.closed_dur:.1f}s" if self.closed else "EYES CLOSED"
@@ -1768,6 +1776,8 @@ def main():
     prev_state            = "OFF"
     face_missing_start    = 0.0
     prev_time             = None
+    perc_announced        = 0       # 경고음으로 이미 알린 PERCLOS 단계
+    perc_sound_until      = 0.0     # PERCLOS 경고음을 이 시각까지만
     last_frame_id         = -1
 
     print("── 시작 (종료: q) ──")
@@ -1799,6 +1809,8 @@ def main():
             ema_ear      = ema.value
             perclos      = 0.0
             d_level      = distract.level     # 전방 주시 태만 단계 (0/1/2)
+            acute_lv     = 0                  # 계속 울릴 경보 단계 (눈 감김·주시 태만·얼굴 없음)
+            perc_lv      = 0                  # PERCLOS 단계 (경고음은 짧게 한 번)
             drowsy_cause = ""                 # 이번 프레임 졸음 경보 원인 (화면 표시용)
             head         = None
 
@@ -1844,16 +1856,20 @@ def main():
                     is_cal  = adaptive_thr.update(ema_ear, judge.perclos, on_road=not distract.off_road)
 
                     if is_cal and adaptive_thr.threshold:
-                        # 졸음 판정 (시간 기준): 연속 눈 감김 1초 LV1 / 2초 LV2 + 최근 60초 PERCLOS
+                        # 졸음 판정 (시간 기준): 연속 눈 감김 1초 LV1 / 2초 LV2 + 최근 30초 PERCLOS
                         lv = judge.update(ema_ear, adaptive_thr.threshold, adaptive_thr.thr_open, curr_time)
                         perclos      = judge.perclos
                         state        = LEVEL_STATE[lv]
                         drowsy_cause = judge.cause
+                        acute_lv     = judge.lv_close
+                        perc_lv      = judge.lv_perc
                     else:
                         state = "OFF"
 
                 # 졸음 판정과 전방 주시 태만 중 더 위험한 단계로
                 state = _worse(state, d_level, adaptive_thr.is_calibrated)
+                if adaptive_thr.is_calibrated:
+                    acute_lv = max(acute_lv, d_level)
 
                 bt_ok = sock is not None      # 락 안 잡음 — BT 재시도 중에도 화면이 멈추지 않게
 
@@ -1887,6 +1903,7 @@ def main():
                          if adaptive_thr.is_calibrated and missing_sec >= FACE_MISSING_DANGER_SEC
                          else "OFF")
                 state = _worse(state, d_level, adaptive_thr.is_calibrated)
+                acute_lv = SEVERITY.get(state, 0)
 
                 bt_ok = sock is not None      # 락 안 잡음 — BT 재시도 중에도 화면이 멈추지 않게
 
@@ -1903,10 +1920,20 @@ def main():
                     calib_phase=adaptive_thr.phase,
                 )
 
+            # ── 디스플레이 스피커 경고음 (BT 모드와 무관) ──
+            #   눈 감김·주시 태만·얼굴 없음 → 그 상태인 동안 계속
+            #   PERCLOS만으로 올라간 경보 → 단계가 올라갈 때 PERCLOS_SOUND_SEC만 울리고 화면 표시만 유지
+            if perc_lv > perc_announced:
+                perc_sound_until = curr_time + PERCLOS_SOUND_SEC
+            perc_announced = perc_lv            # 내려갔다가 다시 오르면 다시 알림
+            sound_lv = acute_lv
+            if curr_time < perc_sound_until:
+                sound_lv = max(sound_lv, perc_lv)
+            sound.set_level(sound_lv)
+
             # 블루투스 상태 동기화
             if state != prev_state:
                 print(f"[상태 변경] {prev_state} → {state}  (PERCLOS={perclos:.1%})")
-                sound.set_level(SEVERITY.get(state, 0))   # 디스플레이 스피커 경고음 (BT 모드와 무관)
                 with sim_mode_lock:
                     is_sim = sim_mode
                 if is_sim:
@@ -1934,6 +1961,7 @@ def main():
                 state                 = "OFF"
                 prev_state            = "OFF"
                 face_missing_start    = 0.0
+                perc_announced, perc_sound_until = 0, 0.0
                 distract.reset()                  # 머리 자세 '정면'도 다시 잡음
                 if head_est is not None:
                     head_est.reset()
