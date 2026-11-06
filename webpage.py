@@ -61,6 +61,8 @@ import shutil
 import subprocess
 import wave
 import queue
+import select
+import atexit
 from collections import deque
 
 import cv2
@@ -184,6 +186,12 @@ TRT_WORKSPACE   = 1 << 28         # 엔진 빌드 작업 메모리 256MB
 
 # 화면에 눈 랜드마크 12점 표시 (랜드마크가 눈에 제대로 붙는지 확인용, 끄려면 False)
 DRAW_EYE_POINTS = False
+
+# OpenCV 창 (터치스크린)
+WINDOW_NAME       = "Jetson Drowsiness System"
+CV_WINDOW_POS     = (0, 0)   # 창을 놓을 화면 좌표 — 터치스크린(왼쪽, 기본 모니터)의 왼쪽 위
+CV_FULLSCREEN     = False    # True: 터치스크린 전체를 채움
+TERMINAL_KEYS     = True     # 터미널에서도 r/q/b + Enter 로 조작 (키보드 포커스가 웹 UI 창에 있어도 됨)
 
 # 68점 랜드마크 눈 인덱스
 LEFT_EYE  = [36, 37, 38, 39, 40, 41]
@@ -383,6 +391,8 @@ def _bt_restart():
         _alarm_sound.stop()
     cv2.destroyAllWindows()
     time.sleep(0.5)
+    if _term_keys is not None:
+        _term_keys.restore()                     # 재시작 전에 터미널 설정 원래대로
     os.execv(sys.executable, [sys.executable] + sys.argv + ["--restarted"])
 
 def _enter_sim_mode(reason: str):
@@ -1797,6 +1807,64 @@ _web_ui = None
 
 
 # ══════════════════════════════════════════
+# 6-5. 터미널 키 입력 — OpenCV 창이 아니어도 R/Q/B 키가 먹게
+# ══════════════════════════════════════════
+class TerminalKeys:
+    """
+    cv2.waitKey()는 OpenCV 창이 선택(포커스)돼 있을 때만 키를 받음.
+    웹 UI(Chromium)가 뜨면 포커스를 가져가서 R/Q 키가 안 먹으므로, 실행한 터미널에서도 키를 받음.
+    (터미널이 아닌 곳에서 실행하면 자동으로 꺼짐)
+    """
+
+    def __init__(self):
+        self._q   = queue.Queue()
+        self._old = None
+        try:
+            import termios, tty
+            if not sys.stdin.isatty():
+                return
+            fd = sys.stdin.fileno()
+            self._old = termios.tcgetattr(fd)
+            tty.setcbreak(fd)                 # 엔터 없이 한 글자씩 (Ctrl+C는 그대로 동작)
+            atexit.register(self.restore)
+            threading.Thread(target=self._loop, args=(fd,), daemon=True).start()
+            print("[키 입력] 터미널에서도 R(재보정) / B(알림음 테스트) / Q(종료) 사용 가능")
+        except Exception as e:
+            print(f"[키 입력] 터미널 키 입력 끔: {e}")
+            self._old = None
+
+    def _loop(self, fd):
+        while is_running:
+            try:
+                r, _, _ = select.select([fd], [], [], 0.2)
+                if r:
+                    ch = os.read(fd, 1)
+                    if ch:
+                        self._q.put(ch.decode(errors="ignore").lower())
+            except Exception:
+                return
+
+    def get(self) -> int:
+        """눌린 키 하나 (없으면 255) — cv2.waitKey와 같은 형식."""
+        try:
+            return ord(self._q.get_nowait()[:1] or "\xff")
+        except (queue.Empty, TypeError):
+            return 255
+
+    def restore(self):
+        if self._old is not None:
+            try:
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old)
+            except Exception:
+                pass
+            self._old = None
+
+
+_term_keys = None
+
+
+# ══════════════════════════════════════════
 # 7. 화면 오버레이
 # ══════════════════════════════════════════
 STATE_COLORS = {
@@ -1918,7 +1986,7 @@ def draw_no_face(frame, is_calibrated: bool, missing_sec: float):
 # 9. 메인 루프
 # ══════════════════════════════════════════
 def main():
-    global target_state, is_running, _alarm_sound, _web_ui
+    global target_state, is_running, _alarm_sound, _web_ui, _term_keys
 
     # 모델 파일 사전 점검 (ONNX 또는 이미 변환된 엔진 중 하나는 있어야 함)
     for model_path in (FACE_DET_MODEL, LANDMARK_MODEL):
@@ -1959,6 +2027,8 @@ def main():
     sound    = AlarmSound().start()                              # 디스플레이 스피커 경고음
     _alarm_sound = sound
     web      = WebUI().start()                                   # 전시용 웹 UI (두 번째 모니터·노트북)
+    tkeys    = TerminalKeys()                                    # 터미널에서도 R/Q/B
+    _term_keys = tkeys
     _web_ui  = web
     fps_ema  = EMAFilter(0.1)     # 화면 표시용 (순간값은 출렁여서 평균)
     proc_ema = EMAFilter(0.1)     # 프레임당 처리 시간(ms)
@@ -1971,6 +2041,31 @@ def main():
     perc_announced        = 0       # 경고음으로 이미 알린 PERCLOS 단계
     perc_sound_until      = 0.0     # PERCLOS 경고음을 이 시각까지만
     last_frame_id         = -1
+
+    # OpenCV 창을 터치스크린에 고정 — 웹 UI가 모니터 배치를 바꾸는 동안 창이 다른 모니터로
+    # 가거나 전체 화면 UI 뒤에 숨는 것을 막기 위해, 시작 후 20초 동안 몇 번 더 제자리로 옮김
+    has_display = bool(os.environ.get("DISPLAY")) or sys.platform != "linux"
+    try:
+        if not has_display:
+            raise cv2.error("DISPLAY 없음")
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL if CV_FULLSCREEN else cv2.WINDOW_AUTOSIZE)
+        if CV_FULLSCREEN:
+            cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.moveWindow(WINDOW_NAME, *CV_WINDOW_POS)
+    except cv2.error as e:
+        print(f"⚠️  OpenCV 창 설정 실패: {e}")
+    win_fix_times = [time.time() + d for d in (2, 5, 9, 14, 20)] if has_display else []
+
+    # 터미널 키 입력 (r/q/b + Enter)
+    term_keys = queue.Queue()
+    if TERMINAL_KEYS and sys.stdin is not None and sys.stdin.isatty():
+        def _stdin_reader():
+            for line in sys.stdin:
+                c = line.strip().lower()[:1]
+                if c:
+                    term_keys.put(c)
+        threading.Thread(target=_stdin_reader, daemon=True).start()
+        print("⌨️  터미널에서 r + Enter = 재캘리브레이션, b + Enter = 알림음 테스트, q + Enter = 종료")
 
     print("── 시작 (종료: q) ──")
 
@@ -2189,8 +2284,23 @@ def main():
                 prev_state = state
 
             proc_ema.update((time.time() - curr_time) * 1000.0)   # 화면 출력 전까지 처리 시간
-            cv2.imshow("Jetson Drowsiness System", frame)
+            cv2.imshow(WINDOW_NAME, frame)
+            if win_fix_times and time.time() >= win_fix_times[0]:
+                win_fix_times.pop(0)
+                try:
+                    cv2.moveWindow(WINDOW_NAME, *CV_WINDOW_POS)
+                    if CV_FULLSCREEN:
+                        cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                except cv2.error:
+                    pass
             key = cv2.waitKey(1) & 0xFF
+            if key == 0xFF:                    # OpenCV 창에 입력 없으면 터미널 입력 확인
+                try:
+                    key = ord(term_keys.get_nowait())
+                except queue.Empty:
+                    pass
+            if key == 255:
+                key = tkeys.get()                # OpenCV 창에 포커스가 없을 때 터미널 키
             if key == ord("q"):
                 break
             elif key == ord("b"):
@@ -2222,6 +2332,7 @@ def main():
         is_running = False
         if _alarm_sound is not None:
             _alarm_sound.stop()
+        tkeys.restore()
         if WEB_UI_AUTO_OPEN and web.enabled:            # 자동으로 띄운 UI 창도 같이 닫기
             subprocess.run(["pkill", "-f", "user-data-dir=/tmp/exhibit-ui"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
