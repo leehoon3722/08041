@@ -79,7 +79,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video0 → 0  (여러 대면 ls /dev/video* 로 확인)
+CAM_INDEX    = 1        # /dev/video0 → 0  (여러 대면 ls /dev/video* 로 확인)
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
