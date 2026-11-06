@@ -40,7 +40,7 @@
   LV1: 낮은 음 '삑-삑' 반복, LV2: 높은 음 빠른 연속음, OFF가 되면 바로 멈춤
 
 [카메라]
-  USB 웹캠 (V4L2, 기본 /dev/video0, 640×480 MJPG 30fps 요청 → 실제 값은 실행 시 출력)
+  USB 웹캠 (V4L2, 기본 /dev/video1, 640×480 MJPG 30fps 요청 → 실제 값은 실행 시 출력)
   · 적외선 카메라가 아니므로 어두운 곳(야간·터널)에선 얼굴 검출이 안 될 수 있음
 
 [프레임 처리]
@@ -79,7 +79,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video0 → 0  (여러 대면 ls /dev/video* 로 확인)
+CAM_INDEX    = 1        # /dev/video0 → 0  (여러 대면 ls /dev/video* 로 확인)
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
