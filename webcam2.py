@@ -86,7 +86,7 @@ FPS_TARGET   = 30
 CAM_FOURCC   = "MJPG"   # 대부분 웹캠은 MJPG여야 640×480 30fps가 나옴 (안 되면 "YUYV" 또는 None)
 CAM_MIRROR   = True     # 화면을 거울처럼 좌우 반전 (판정에는 영향 없음)
 CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨리지 않게 (v4l2-ctl 사용)
-CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
+CAM_EXPOSURE = 250     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
 FORCE_SIM_MODE        = True   # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
