@@ -90,7 +90,7 @@ CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨�
 CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
-FORCE_SIM_MODE        = False  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
+FORCE_SIM_MODE        = True  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
 ESP32_MAC_ADDR        = "08:3A:F2:B9:8C:6A"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
