@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>졸음운전 감지 시스템</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-2: #18202b;
+    --line: #243042;
+    --text: #e8eef6;
+    --muted: #8a98ab;
+    --ok: #2fd27a;
+    --warn: #ffb020;
+    --danger: #ff4d4f;
+    --accent: #4aa8ff;
+    --level: var(--ok);
+    --level-rgb: 47, 210, 122;
+    --radius: 18px;
+  }
+  body[data-level="1"] { --level: var(--warn); --level-rgb: 255, 176, 32; }
+  body[data-level="2"] { --level: var(--danger); --level-rgb: 255, 77, 79; }
+  body[data-level="calib"] { --level: var(--accent); --level-rgb: 74, 168, 255; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 1.6vh;
+    padding: 2.2vh 2vw;
+  }
+
+  /* ── 상단 ── */
+  header { display: flex; align-items: center; justify-content: space-between; gap: 2vw; }
+  .brand { display: flex; align-items: center; gap: 1vw; }
+  .logo {
+    width: 4.6vh; height: 4.6vh; border-radius: 1.2vh;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, #1f6fd1, #4aa8ff);
+  }
+  .logo svg { width: 62%; height: 62%; }
+  h1 { margin: 0; font-size: 3.1vh; font-weight: 800; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 1.6vh; margin-top: 0.3vh; }
+  .chips { display: flex; gap: 0.8vw; align-items: center; }
+  .chip {
+    display: flex; align-items: center; gap: 0.6vw;
+    background: var(--panel); border: 1px solid var(--line);
+    padding: 0.9vh 1vw; border-radius: 999px;
+    font-size: 1.55vh; color: var(--muted); white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-weight: 700; }
+  .dot { width: 1vh; height: 1vh; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0.8vh var(--ok); }
+  .dot.off { background: var(--danger); }
+  .dot.sim { background: var(--warn); }
+  .clock { font-variant-numeric: tabular-nums; font-size: 2.4vh; font-weight: 700; color: var(--text); }
+
+  /* ── 본문 ── */
+  main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.4vw; min-height: 0; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    min-height: 0;
+  }
+
+  /* 영상 */
+  .video-card {
+    position: relative; overflow: hidden;
+    display: grid; place-items: center;
+    background: #05080b;
+    border: 2px solid rgba(var(--level-rgb), .55);
+    box-shadow: 0 0 0 0 transparent;
+    transition: border-color .3s, box-shadow .3s;
+  }
+  body[data-level="1"] .video-card { box-shadow: 0 0 3vh -0.5vh var(--warn); }
+  body[data-level="2"] .video-card { animation: pulse 0.8s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 1vh 0 var(--danger); }
+    50% { box-shadow: 0 0 5vh 0.6vh var(--danger); }
+  }
+  .video-wrap { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
+  .video-box { position: relative; aspect-ratio: 4 / 3; max-width: 100%; max-height: 100%; height: 100%; }
+  .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: calc(var(--radius) - 6px); }
+  .video-box > svg.facelayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .facebox { fill: none; stroke: var(--level); stroke-width: 0.5; vector-effect: non-scaling-stroke; transition: all .15s linear; }
+  .corner { stroke: var(--level); stroke-width: 4; fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+  .video-tag {
+    position: absolute; left: 1.6vh; top: 1.6vh;
+    display: flex; align-items: center; gap: 0.6vw;
+    background: rgba(5, 8, 11, .7); backdrop-filter: blur(6px);
+    padding: 0.7vh 1vw; border-radius: 999px; font-size: 1.5vh; color: var(--muted);
+  }
+  .rec { width: 1vh; height: 1vh; border-radius: 50%; background: var(--danger); animation: blink 1.4s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  .overlay {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 2vh;
+    background: rgba(5, 8, 11, .62); backdrop-filter: blur(2px);
+    text-align: center;
+  }
+  .overlay.show { display: flex; }
+  .overlay .big { font-size: 4.4vh; font-weight: 800; letter-spacing: -0.02em; }
+  .overlay .small { font-size: 2vh; color: var(--muted); }
+  .ring { width: 16vh; height: 16vh; }
+  .ring circle { fill: none; stroke-width: 7; }
+  .ring .bg { stroke: rgba(255,255,255,.1); }
+  .ring .fg { stroke: var(--accent); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset .2s linear; }
+  .ring text { fill: var(--text); font-size: 26px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
+  .steps { display: flex; gap: 1vw; }
+  .step { padding: 0.8vh 1.2vw; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 1.7vh; }
+  .step.active { border-color: var(--accent); color: var(--text); background: rgba(74,168,255,.14); }
+  .step.done { color: var(--ok); border-color: rgba(47,210,122,.4); }
+
+  .hands-banner {
+    position: absolute; left: 50%; bottom: 3vh; transform: translateX(-50%);
+    display: none; align-items: center; gap: 1vw;
+    background: var(--danger); color: #fff; font-weight: 800; font-size: 2.8vh;
+    padding: 1.4vh 2.4vw; border-radius: 999px;
+    box-shadow: 0 1vh 4vh rgba(255,77,79,.45);
+    animation: blink 1s infinite;
+  }
+  .hands-banner.show { display: flex; }
+
+  /* 오른쪽 */
+  .side { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 1.4vh; min-height: 0; }
+  .status {
+    padding: 2.4vh 1.8vw;
+    display: grid; grid-template-columns: auto 1fr; gap: 1.6vw; align-items: center;
+    background: linear-gradient(135deg, rgba(var(--level-rgb), .2), var(--panel) 70%);
+    border-color: rgba(var(--level-rgb), .45);
+    transition: background .3s, border-color .3s;
+  }
+  .status-icon {
+    width: 10vh; height: 10vh; border-radius: 50%;
+    display: grid; place-items: center;
+    background: rgba(var(--level-rgb), .18);
+    border: 3px solid var(--level);
+  }
+  .status-icon svg { width: 55%; height: 55%; stroke: var(--level); }
+  .status-label { font-size: 1.7vh; color: var(--muted); }
+  .status-text { font-size: 6vh; font-weight: 900; line-height: 1.05; color: var(--level); letter-spacing: -0.03em; }
+  .status-cause { font-size: 2vh; margin-top: 0.6vh; min-height: 2.6vh; }
+
+  .metric { padding: 1.8vh 1.6vw 1.2vh; display: flex; flex-direction: column; gap: 1.2vh; min-height: 0; }
+  .metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
+  .metric-title { font-size: 2vh; font-weight: 700; }
+  .metric-desc { font-size: 1.45vh; color: var(--muted); margin-top: 0.3vh; }
+  .metric-value { font-size: 4.2vh; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .metric-value small { font-size: 0.45em; color: var(--muted); font-weight: 600; margin-left: 0.2em; }
+
+  .bar { position: relative; height: 2.2vh; border-radius: 999px; background: var(--panel-2); overflow: visible; }
+  .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--ok); width: 0; transition: width .2s linear, background .2s; }
+  .mark { position: absolute; top: -0.6vh; bottom: -0.6vh; width: 2px; }
+  .mark span { position: absolute; top: 100%; transform: translateX(-50%); margin-top: 0.5vh; font-size: 1.35vh; color: var(--muted); white-space: nowrap; }
+  .mark.w { background: var(--warn); } .mark.d { background: var(--danger); }
+  .scale { height: 2.4vh; }
+
+  .eye-box { display: flex; align-items: center; gap: 0.6vw; margin-left: auto; margin-right: 1.4vw; }
+  .eye { width: 6vh; height: 3vh; }
+  .eye path { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; }
+  .eye .iris { fill: var(--accent); stroke: none; transition: opacity .1s; }
+  .eye-state { font-size: 1.9vh; font-weight: 700; white-space: nowrap; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4vh; min-height: 0; }
+  .head-wrap { display: flex; align-items: center; gap: 1.2vw; flex: 1; min-height: 0; }
+  .radar { height: 100%; max-height: 14vh; min-height: 8vh; aspect-ratio: 1; flex: none; }
+  .radar .grid { stroke: var(--line); fill: none; }
+  .radar .zone { fill: rgba(47,210,122,.08); stroke: rgba(47,210,122,.35); }
+  .radar .pt { fill: var(--accent); transition: cx .15s linear, cy .15s linear; }
+  .radar .pt.out { fill: var(--warn); }
+  .kv { font-size: 1.5vh; color: var(--muted); line-height: 1.8; font-variant-numeric: tabular-nums; }
+  .kv b { color: var(--text); font-weight: 700; }
+  .hands { flex: 1; display: flex; align-items: center; gap: 1.2vw; }
+  .hands svg { width: 8vh; height: 8vh; }
+  .hands .wheel { stroke: var(--text); fill: none; stroke-width: 5; }
+  .hands-state { font-size: 3vh; font-weight: 800; }
+
+  /* 하단 */
+  footer { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.4vw; }
+  .legend { display: flex; gap: 1vw; padding: 1.4vh 1.4vw; align-items: stretch; }
+  .legend-item { flex: 1; display: flex; gap: 0.8vw; align-items: flex-start; font-size: 1.5vh; color: var(--muted); line-height: 1.45; }
+  .legend-item b { display: block; color: var(--text); font-size: 1.7vh; margin-bottom: 0.2vh; }
+  .badge { flex: none; width: 1.3vh; height: 1.3vh; border-radius: 50%; margin-top: 0.5vh; }
+  .log { padding: 1.4vh 1.4vw; display: flex; flex-direction: column; gap: 0.7vh; overflow: hidden; height: 13vh; }
+  .log-title { font-size: 1.5vh; color: var(--muted); }
+  .log-item { display: flex; gap: 0.8vw; font-size: 1.6vh; align-items: center; animation: slide .3s ease-out; }
+  .log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  @keyframes slide { from { opacity: 0; transform: translateY(-0.6vh); } }
+
+  .lost {
+    position: fixed; inset: 0; display: none; place-items: center;
+    background: rgba(5, 8, 11, .85); z-index: 10; text-align: center;
+  }
+  .lost.show { display: grid; }
+  .lost .big { font-size: 4vh; font-weight: 800; }
+  .lost .small { color: var(--muted); font-size: 2vh; margin-top: 1vh; }
+
+  .edge { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0; transition: opacity .3s; }
+  body[data-level="2"] .edge { opacity: 1; box-shadow: inset 0 0 14vh 2vh rgba(255,77,79,.55); animation: edge 0.8s ease-in-out infinite; }
+  @keyframes edge { 50% { box-shadow: inset 0 0 6vh 0 rgba(255,77,79,.25); } }
+
+  @media (max-aspect-ratio: 4/3) {
+    main, footer { grid-template-columns: 1fr; }
+    .log { display: none; }
+  }
+</style>
+</head>
+<body data-level="0">
+<div class="edge"></div>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+        </svg>
+      </div>
+      <div>
+        <h1>졸음운전 감지 시스템</h1>
+        <div class="sub">카메라로 눈과 얼굴 방향을 실시간 분석해 졸음과 전방 주시 태만을 경고합니다</div>
+      </div>
+    </div>
+    <div class="chips">
+      <div class="chip"><span class="dot" id="btDot"></span><span id="btText">경고 장치</span></div>
+      <div class="chip">카메라 <b id="camFps">–</b> fps</div>
+      <div class="chip">분석 <b id="procMs">–</b> ms</div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card video-card">
+      <div class="video-wrap">
+        <div class="video-box" id="videoBox">
+          <img id="video" alt="실시간 카메라 영상">
+          <svg class="facelayer" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <g id="faceG" style="display:none">
+              <rect class="facebox" id="faceRect" x="0" y="0" width="0" height="0" rx="1"/>
+              <path class="corner" id="faceCorners" d=""/>
+            </g>
+          </svg>
+          <div class="video-tag"><span class="rec"></span>실시간 분석 중</div>
+
+          <div class="overlay" id="calibOverlay">
+            <div class="steps">
+              <div class="step" id="stepOpen">1 · 정면 보고 눈 뜨기</div>
+              <div class="step" id="stepClosed">2 · 눈 감기</div>
+            </div>
+            <svg class="ring" viewBox="0 0 120 120">
+              <circle class="bg" cx="60" cy="60" r="52"/>
+              <circle class="fg" id="ringFg" cx="60" cy="60" r="52" stroke-dasharray="326.7" stroke-dashoffset="0"/>
+              <text x="60" y="60" id="ringText">3</text>
+            </svg>
+            <div class="big" id="calibBig">정면을 보고 눈을 떠 주세요</div>
+            <div class="small" id="calibSmall">운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다</div>
+          </div>
+
+          <div class="overlay" id="faceOverlay">
+            <div class="big">얼굴을 찾는 중…</div>
+            <div class="small" id="faceSmall">카메라 정면에 앉아 주세요</div>
+          </div>
+
+          <div class="hands-banner" id="handsBanner">✋ 핸들을 잡아 주세요</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="side">
+      <div class="card status">
+        <div class="status-icon" id="statusIcon"></div>
+        <div>
+          <div class="status-label">운전자 상태</div>
+          <div class="status-text" id="statusText">대기</div>
+          <div class="status-cause" id="statusCause">&nbsp;</div>
+        </div>
+      </div>
+
+      <div class="card metric">
+        <div class="metric-head">
+          <div>
+            <div class="metric-title">눈 감김 시간</div>
+            <div class="metric-desc">연속으로 1초 감으면 주의, 2초면 위험</div>
+          </div>
+          <div class="eye-box">
+            <svg class="eye" viewBox="0 0 70 34">
+              <path id="eyeTop" d="M4 17 Q35 -3 66 17"/>
+              <path id="eyeBot" d="M4 17 Q35 37 66 17"/>
+              <circle class="iris" id="eyeIris" cx="35" cy="17" r="8"/>
+            </svg>
+            <div class="eye-state" id="eyeState">–</div>
+          </div>
+          <div class="metric-value" id="closedVal">0.0<small>초</small></div>
+        </div>
+        <div>
+          <div class="bar"><div class="bar-fill" id="closedBar"></div>
+            <div class="mark w" id="mClosed1"><span>1초</span></div>
+            <div class="mark d" id="mClosed2"><span>2초</span></div>
+          </div>
+          <div class="scale"></div>
+        </div>
+      </div>
+
+      <div class="card metric">
+        <div class="metric-head">
+          <div>
+            <div class="metric-title">졸음 경향 (PERCLOS)</div>
+            <div class="metric-desc" id="percDesc">최근 30초 중 눈을 감고 있던 시간의 비율</div>
+          </div>
+          <div class="metric-value" id="percVal">0<small>%</small></div>
+        </div>
+        <div>
+          <div class="bar"><div class="bar-fill" id="percBar"></div>
+            <div class="mark w" id="mPerc1"><span>15% 주의</span></div>
+            <div class="mark d" id="mPerc2"><span>30% 위험</span></div>
+          </div>
+          <div class="scale"></div>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="card metric">
+          <div class="metric-title">전방 주시</div>
+          <div class="head-wrap">
+            <svg class="radar" viewBox="-50 -50 100 100">
+              <circle class="grid" r="46"/><circle class="grid" r="23"/>
+              <line class="grid" x1="-46" y1="0" x2="46" y2="0"/><line class="grid" x1="0" y1="-46" x2="0" y2="46"/>
+              <rect class="zone" id="zone" x="-15" y="-12" width="30" height="24" rx="4"/>
+              <circle class="pt" id="headPt" cx="0" cy="0" r="5"/>
+            </svg>
+            <div class="kv" id="headKv">좌우 <b>–</b><br>상하 <b>–</b></div>
+          </div>
+        </div>
+        <div class="card metric">
+          <div class="metric-title">핸들 파지</div>
+          <div class="hands">
+            <svg viewBox="0 0 64 64"><circle class="wheel" cx="32" cy="32" r="26"/><circle class="wheel" cx="32" cy="32" r="6"/><path class="wheel" d="M8 30 L26 32 M56 30 L38 32 M32 38 L32 58"/></svg>
+            <div class="hands-state" id="handsState">–</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="card legend">
+      <div class="legend-item"><span class="badge" style="background:var(--ok)"></span><div><b>정상</b>눈을 뜨고 정면을 보고 있음</div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 졸음 경향 15% · 한눈 3초</div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 졸음 경향 30% · 얼굴 사라짐</div></div>
+    </div>
+    <div class="card log" id="log"><div class="log-title">최근 기록</div></div>
+  </footer>
+</div>
+
+<div class="lost" id="lost"><div><div class="big">시스템과 연결이 끊어졌습니다</div><div class="small">젯슨 나노 프로그램이 실행 중인지 확인해 주세요 · 자동으로 다시 연결합니다</div></div></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var ICONS = {
+    0: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    1: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6"/><path d="M12 17h.01"/></svg>',
+    2: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
+    wait: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>'
+  };
+  var LEVEL_TEXT = { 0: "정상", 1: "주의", 2: "위험" };
+  var CAUSE_TEXT = {
+    eyes: function (s) { return "눈을 " + s.closed_dur.toFixed(1) + "초째 감고 있어요"; },
+    perclos: function (s) { return "최근 " + Math.round(s.perclos_window) + "초간 눈 감은 비율 " + Math.round(s.perclos * 100) + "%"; },
+    offroad: function (s) { return "전방을 " + s.off_dur.toFixed(1) + "초째 보지 않고 있어요"; },
+    distract: function (s) { return "최근 " + Math.round(s.vats_window) + "초간 한눈판 시간 " + Math.round(s.vats) + "초"; },
+    noface: function () { return "운전자 얼굴이 보이지 않아요"; }
+  };
+  var LOG_COLOR = { OFF: "var(--ok)", LV1_WARN: "var(--warn)", LV2_DANGER: "var(--danger)", hands: "var(--danger)", calib: "var(--accent)" };
+
+  var lastEvent = 0, failCount = 0, lastIcon = null;
+
+  // 시계
+  function tick() {
+    var d = new Date();
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    $("clock").textContent = p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+  setInterval(tick, 1000); tick();
+
+  // 영상 (끊기면 다시 연결)
+  var video = $("video");
+  function connectVideo() { video.src = "/stream.mjpg?t=" + Date.now(); }
+  video.onerror = function () { setTimeout(connectVideo, 2000); };
+  connectVideo();
+
+  function setMark(el, ratio) { el.style.left = (Math.min(Math.max(ratio, 0), 1) * 100) + "%"; }
+  function pct(x) { return (Math.min(Math.max(x, 0), 1) * 100) + "%"; }
+
+  function render(s) {
+    var level = s.calibrated ? s.level : 0;
+    var searching = s.calibrated && !s.face && level === 0;     // 얼굴을 잠깐 놓친 상태
+    document.body.setAttribute("data-level", s.calibrated && !searching ? String(level) : "calib");
+
+    // 상태 카드
+    var iconKey = s.calibrated && !searching ? level : "wait";
+    if (iconKey !== lastIcon) { $("statusIcon").innerHTML = ICONS[iconKey]; lastIcon = iconKey; }
+    if (!s.calibrated) {
+      $("statusText").textContent = "준비 중";
+      $("statusCause").textContent = "운전자 기준 측정 중";
+    } else if (searching) {
+      $("statusText").textContent = "확인 중";
+      $("statusCause").textContent = "운전자 얼굴을 찾고 있어요";
+    } else {
+      $("statusText").textContent = LEVEL_TEXT[level];
+      var causes = (s.causes || []).map(function (c) { return CAUSE_TEXT[c] ? CAUSE_TEXT[c](s) : c; });
+      $("statusCause").textContent = level === 0 ? (s.face ? "안전하게 운전 중이에요" : "얼굴을 찾는 중") : (causes.join(" · ") || " ");
+    }
+
+    // 시스템 칩
+    var bt = $("btDot");
+    bt.className = "dot " + (s.sim ? "sim" : (s.bt ? "on" : "off"));
+    $("btText").textContent = s.sim ? "시뮬레이션 모드" : (s.bt ? "경고 장치 연결됨" : "경고 장치 연결 끊김");
+    $("camFps").textContent = Math.round(s.cam_fps || s.fps || 0);
+    $("procMs").textContent = Math.round(s.proc_ms || 0);
+
+    // 캘리브레이션 안내
+    var calib = !s.calibrated && s.face;
+    $("calibOverlay").classList.toggle("show", calib);
+    if (calib) {
+      var closedPhase = s.calib_phase === "closed";
+      var dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
+      $("stepOpen").className = "step " + (closedPhase ? "done" : "active");
+      $("stepClosed").className = "step " + (closedPhase ? "active" : "");
+      $("calibBig").textContent = closedPhase ? "눈을 편하게 감아 주세요" : "정면을 보고 눈을 떠 주세요";
+      $("calibSmall").textContent = closedPhase ? "감은 눈의 기준을 측정합니다" : "운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다";
+      $("ringFg").style.stroke = closedPhase ? "var(--warn)" : "var(--accent)";
+      $("ringFg").style.strokeDashoffset = (326.7 * (1 - s.calib_rem / Math.max(dur, 0.01))).toFixed(1);
+      $("ringText").textContent = Math.ceil(s.calib_rem);
+    }
+    $("faceOverlay").classList.toggle("show", !s.face);
+    if (!s.face) {
+      $("faceSmall").textContent = s.calibrated && s.missing_sec > 0
+        ? "얼굴이 " + s.missing_sec.toFixed(0) + "초째 보이지 않아요 (" + s.face_missing_sec.toFixed(0) + "초면 위험)"
+        : "카메라 정면에 앉아 주세요";
+    }
+
+    // 얼굴 상자
+    var fg = $("faceG");
+    if (s.face_box && s.calibrated) {
+      var b = s.face_box, x = b[0] * 100, y = b[1] * 100, w = (b[2] - b[0]) * 100, h = (b[3] - b[1]) * 100;
+      var r = $("faceRect");
+      r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", h);
+      var cw = w * 0.18, ch = h * 0.18;
+      $("faceCorners").setAttribute("d",
+        "M" + x + " " + (y + ch) + "V" + y + "H" + (x + cw) +
+        "M" + (x + w - cw) + " " + y + "H" + (x + w) + "V" + (y + ch) +
+        "M" + (x + w) + " " + (y + h - ch) + "V" + (y + h) + "H" + (x + w - cw) +
+        "M" + (x + cw) + " " + (y + h) + "H" + x + "V" + (y + h - ch));
+      fg.style.display = "";
+    } else {
+      fg.style.display = "none";
+    }
+
+    // 눈 감김 시간
+    var maxClosed = s.eye_lv2_sec * 1.5;
+    setMark($("mClosed1"), s.eye_lv1_sec / maxClosed);
+    setMark($("mClosed2"), s.eye_lv2_sec / maxClosed);
+    $("closedVal").innerHTML = s.closed_dur.toFixed(1) + "<small>초</small>";
+    var cb = $("closedBar");
+    cb.style.width = pct(s.closed_dur / maxClosed);
+    cb.style.background = s.closed_dur >= s.eye_lv2_sec ? "var(--danger)" : s.closed_dur >= s.eye_lv1_sec ? "var(--warn)" : "var(--accent)";
+    var closed = s.face && s.closed;
+    $("eyeIris").style.opacity = closed ? 0 : 1;
+    document.querySelector(".eye").style.opacity = s.face ? 1 : 0.3;
+    $("eyeTop").setAttribute("d", closed ? "M4 17 Q35 25 66 17" : "M4 17 Q35 -3 66 17");
+    $("eyeState").textContent = !s.face ? "–" : (closed ? "눈 감음" : "눈 뜸");
+    $("eyeState").style.color = closed ? "var(--warn)" : "var(--text)";
+
+    // PERCLOS
+    var maxP = Math.max(s.perclos_lv2 * 1.5, 0.3);
+    setMark($("mPerc1"), s.perclos_lv1 / maxP);
+    setMark($("mPerc2"), s.perclos_lv2 / maxP);
+    $("mPerc1").firstChild.textContent = Math.round(s.perclos_lv1 * 100) + "% 주의";
+    $("mPerc2").firstChild.textContent = Math.round(s.perclos_lv2 * 100) + "% 위험";
+    $("percDesc").textContent = "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율";
+    $("percVal").innerHTML = Math.round(s.perclos * 100) + "<small>%</small>";
+    var pb = $("percBar");
+    pb.style.width = pct(s.perclos / maxP);
+    pb.style.background = s.perclos >= s.perclos_lv2 ? "var(--danger)" : s.perclos >= s.perclos_lv1 ? "var(--warn)" : "var(--accent)";
+
+    // 머리 방향 (정면 대비, ±60도 → 반지름 46)
+    var pt = $("headPt");
+    if (s.head) {
+      var px = Math.max(-46, Math.min(46, s.yaw / 60 * 46));
+      var py = Math.max(-46, Math.min(46, -s.pitch / 60 * 46));
+      pt.setAttribute("cx", px.toFixed(1)); pt.setAttribute("cy", py.toFixed(1));
+      pt.style.display = "";
+      pt.setAttribute("class", "pt" + (s.off_road ? " out" : ""));
+      $("headKv").innerHTML = "좌우 <b>" + (s.yaw > 0 ? "+" : "") + Math.round(s.yaw) + "°</b><br>상하 <b>" + (s.pitch > 0 ? "+" : "") + Math.round(s.pitch) + "°</b><br>" +
+        (s.off_road ? "<b style='color:var(--warn)'>전방 이탈 " + s.off_dur.toFixed(1) + "초</b>" : "<b style='color:var(--ok)'>전방 주시 중</b>");
+    } else {
+      pt.style.display = "none";
+      $("headKv").innerHTML = "좌우 <b>–</b><br>상하 <b>–</b>";
+    }
+
+    // 핸들
+    var hs = $("handsState");
+    if (s.sim || !s.bt) { hs.textContent = "센서 미연결"; hs.style.color = "var(--muted)"; }
+    else if (s.hands_off) { hs.textContent = "손을 뗌"; hs.style.color = "var(--danger)"; }
+    else { hs.textContent = "잡고 있음"; hs.style.color = "var(--ok)"; }
+    $("handsBanner").classList.toggle("show", !!s.hands_off);
+  }
+
+  function addEvents(events) {
+    var log = $("log");
+    events.forEach(function (e) {
+      lastEvent = Math.max(lastEvent, e.no);
+      var d = new Date(e.t * 1000);
+      var p = function (n) { return (n < 10 ? "0" : "") + n; };
+      var item = document.createElement("div");
+      item.className = "log-item";
+      item.innerHTML = '<span class="badge" style="background:' + (LOG_COLOR[e.kind] || "var(--muted)") + '"></span>' +
+        "<time>" + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "</time><span></span>";
+      item.lastChild.textContent = e.text;
+      log.insertBefore(item, log.children[1] || null);
+    });
+    while (log.children.length > 6) log.removeChild(log.lastChild);
+  }
+
+  function poll() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/api/state?since=" + lastEvent);
+    xhr.timeout = 1500;
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        failCount = 0; $("lost").classList.remove("show");
+        var s = JSON.parse(xhr.responseText);
+        if (s.events && s.events.length) addEvents(s.events);
+        if (s.ready) render(s);
+      } else { fail(); }
+      setTimeout(poll, 200);
+    };
+    xhr.onerror = xhr.ontimeout = function () { fail(); setTimeout(poll, 1000); };
+    xhr.send();
+  }
+  function fail() {
+    failCount++;
+    if (failCount >= 3) $("lost").classList.add("show");
+  }
+  poll();
+})();
+</script>
+</body>
+</html>
