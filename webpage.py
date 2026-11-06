@@ -156,6 +156,7 @@ DRAW_HEAD_AXIS      = False   # 코끝에서 얼굴 방향 선 표시 (머리 �
 # 경고음 — 디스플레이 스피커(HDMI)로 재생 (ESP32 부저 대신)
 SOUND_ENABLE        = True
 SOUND_DEVICE        = "plughw:0,3"   # aplay -l 의 card 0, device 3 (HDMI 0). 기본 출력 장치를 쓰려면 "default"
+SOUND_FALLBACK      = "default"      # SOUND_DEVICE가 계속 실패하면(예: 브라우저가 장치를 점유) 이 장치로 전환
 SOUND_DIR           = "./sounds"     # 경고음 wav를 처음 실행 때 자동 생성해 저장
 SOUND_VOLUME        = 0.8            # 0.0 ~ 1.0
 LV1_TONE_HZ         = 880            # LV1: 낮은 음 '삑-삑' 1초 간격
@@ -1487,6 +1488,7 @@ class AlarmSound:
         self._stop   = False
         self._fails  = 0
         self.files   = {}
+        self.device  = SOUND_DEVICE
         self._buz_pending = False
         self._playing     = 0              # 지금 재생 중: 0 없음, 1/2 단계음, "buz" 알림음
         if SOUND_ENABLE and not self.enabled:
@@ -1593,7 +1595,7 @@ class AlarmSound:
                     lv = self._level
                 self._playing = lv
                 try:
-                    self._proc = subprocess.Popen(["aplay", "-q", "-D", SOUND_DEVICE, self.files[lv]],
+                    self._proc = subprocess.Popen(["aplay", "-q", "-D", self.device, self.files[lv]],
                                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 except OSError as e:
                     print(f"⚠️  [경고음] 재생 실패: {e} → 경고음 끔")
@@ -1608,6 +1610,10 @@ class AlarmSound:
                 msg = err.decode(errors="ignore").strip().splitlines()
                 print(f"⚠️  [경고음] aplay 오류: {msg[-1] if msg else proc.returncode}")
                 if self._fails >= 3:
+                    if SOUND_FALLBACK and self.device != SOUND_FALLBACK:
+                        print(f"⚠️  [경고음] {self.device} 계속 실패 → '{SOUND_FALLBACK}' 장치로 전환")
+                        self.device, self._fails = SOUND_FALLBACK, 0
+                        continue
                     print(f"⚠️  [경고음] 계속 실패해서 끔 — SOUND_DEVICE({SOUND_DEVICE}) 확인 (aplay -l)")
                     self.enabled = False
                     return
@@ -1653,6 +1659,7 @@ class WebUI:
         self._state    = {"ready": False}
         self._events   = deque(maxlen=40)   # (번호, 시각, 종류, 글)
         self._event_no = 0
+        self.key_q     = None          # 웹 UI 창에서 누른 키 (r/q/b) → 메인 루프로
         if not WEB_UI_ENABLE:
             return
         try:
@@ -1774,6 +1781,15 @@ class WebUI:
         def stream():
             return Response(self._mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame",
                             headers={"Cache-Control": "no-store"})
+
+        @app.route("/api/key", methods=["POST"])
+        def api_key():
+            # 키보드 포커스가 전체 화면 UI 창에 있어도 r/q/b가 먹도록 (페이지가 눌린 키를 보내 줌)
+            k = (request.args.get("k") or "")[:1].lower()
+            if k in ("r", "q", "b") and self.key_q is not None:
+                self.key_q.put(k)
+                return jsonify(ok=True)
+            return jsonify(ok=False), 400
 
         @app.route("/api/state")
         def api_state():
@@ -2058,6 +2074,7 @@ def main():
 
     # 터미널 키 입력 (r/q/b + Enter)
     term_keys = queue.Queue()
+    web.key_q = term_keys                     # 웹 UI 창에서 누른 키도 같은 곳으로
     if TERMINAL_KEYS and sys.stdin is not None and sys.stdin.isatty():
         def _stdin_reader():
             for line in sys.stdin:

@@ -558,6 +558,16 @@
     if (failCount >= 3) $("lost").classList.add("show");
   }
   poll();
+
+  // 키보드 포커스가 이 화면에 있어도 r(재캘리브레이션) / b(알림음 테스트) / q(종료)가 프로그램에 전달되게
+  document.addEventListener("keydown", function (e) {
+    var k = (e.key || "").toLowerCase();
+    if (k === "r" || k === "b" || k === "q") {
+      var x = new XMLHttpRequest();
+      x.open("POST", "/api/key?k=" + k);
+      x.send();
+    }
+  });
 })();
 </script>
 </body>
