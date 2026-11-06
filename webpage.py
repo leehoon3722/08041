@@ -164,6 +164,8 @@ WEB_PORT            = 5000
 WEB_STREAM_FPS      = 15             # 웹으로 보내는 영상 fps (판정은 카메라 30fps 그대로). 무거우면 10
 WEB_STREAM_WIDTH    = 640            # 웹 영상 가로 크기 (더 줄이면 압축 부담 감소, 예: 480)
 WEB_JPEG_QUALITY    = 75
+WEB_UI_AUTO_OPEN    = True           # 프로그램 실행 시 두 번째 모니터에 UI 자동으로 띄움 (start_exhibit_ui.sh 사용)
+WEB_UI_MONITOR      = ""             # 띄울 모니터 이름 (xrandr 이름, 예: "DP-0"). 빈칸이면 자동 선택
 BUZ_SOUND_FILE      = None           # ESP32 !BUZ# 알림음. None이면 '띵-동-띵-동' 자동 생성,
                                      # 녹음한 음성 등을 쓰려면 wav 경로 (예: "./sounds/handsoff_voice.wav")
 
@@ -1690,7 +1692,23 @@ class WebUI:
         ips = _local_ips()
         print(f"✅ [웹 UI] http://localhost:{WEB_PORT}"
               + (f"  (같은 네트워크: {', '.join(f'http://{ip}:{WEB_PORT}' for ip in ips)})" if ips else ""))
+        if WEB_UI_AUTO_OPEN:
+            self._open_kiosk()
         return self
+
+    def _open_kiosk(self):
+        """start_exhibit_ui.sh를 백그라운드로 실행 → 두 번째 모니터에 Chromium 전체 화면."""
+        sh = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_exhibit_ui.sh")
+        if not os.environ.get("DISPLAY"):
+            print("⚠️  [웹 UI] 화면(DISPLAY)이 없어 자동으로 띄우지 않음 — 다른 기기 브라우저로 접속하세요")
+            return
+        if not os.path.isfile(sh):
+            print(f"⚠️  [웹 UI] {sh} 없음 → 자동으로 띄우지 않음")
+            return
+        try:
+            subprocess.Popen(["bash", sh] + ([WEB_UI_MONITOR] if WEB_UI_MONITOR else []))
+        except OSError as e:
+            print(f"⚠️  [웹 UI] 자동 실행 실패: {e}")
 
     def _encode_loop(self):
         last = 0
@@ -2204,6 +2222,9 @@ def main():
         is_running = False
         if _alarm_sound is not None:
             _alarm_sound.stop()
+        if WEB_UI_AUTO_OPEN and web.enabled:            # 자동으로 띄운 UI 창도 같이 닫기
+            subprocess.run(["pkill", "-f", "user-data-dir=/tmp/exhibit-ui"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         vs.stop()
         with sock_lock:
             if sock:
