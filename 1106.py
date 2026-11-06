@@ -35,20 +35,17 @@
   · 최근 30초 중 이탈 누적 10초 이상 → LV1 (짧게 여러 번 보는 휴대폰 사용 패턴)
   · ESP32에는 기존과 같은 LV1_WARN / LV2_DANGER로 전달 → 펌웨어 수정 불필요
 
-[실험: 검은자(홍채) 위치 추적]  — 화면 표시만, 경보와 무관 / IRIS_TRACK_ENABLE로 켜고 끔
-  눈꼬리 기준으로 눈을 수평으로 펴서 잘라낸 뒤, 가장 어두운 세로 띠(검은자)의 가로 위치를 찾음
-  → 캘리브레이션 때 정면 위치와 비교해 '눈만 돌린 각도'를 대략 추정, 머리 yaw와 더해 시선(GAZE) 표시
-  · 640×480에선 검은자가 약 9px이라 30° 안팎의 큰 움직임만 의미 있음
-  · 일반 카메라로는 동공이 아니라 검은자(홍채) 전체를 잡음 (갈색 눈은 가시광선에서 동공·홍채 구분 안 됨)
-  · 화면 오른쪽 위: 펴낸 눈 확대(노란 선=눈꺼풀 랜드마크, 자홍 선=찾은 검은자 중심, 회색=무효)
-
 [경고음]
   LV1/LV2 경고음을 디스플레이 스피커(HDMI, aplay -D plughw:0,3)로 재생 — ESP32 부저 대신
   LV1: 낮은 음 '삑-삑' 반복, LV2: 높은 음 빠른 연속음, OFF가 되면 바로 멈춤
 
+[카메라]
+  USB 웹캠 (V4L2, /dev/video1, 640×480 MJPG 30fps 요청 → 실제 값은 실행 시 출력)
+  · 적외선 카메라가 아니므로 어두운 곳(야간·터널)에선 얼굴 검출이 안 될 수 있음
+
 [프레임 처리]
   카메라에서 새 프레임이 들어올 때만 처리 (같은 프레임 중복 처리 X)
-  → '프레임 수' 기준 판정(즉각 트리거, PERCLOS 창)이 설계대로 30fps 기준으로 동작
+  → 판정은 모두 '시간' 기준이라 FPS가 흔들려도 같은 기준으로 동작
   화면 왼쪽 위: FPS(실제 처리한 새 프레임 수) + 프레임당 처리 시간(ms)
 """
 
@@ -63,6 +60,7 @@ import threading
 import shutil
 import subprocess
 import wave
+import queue
 from collections import deque
 
 import cv2
@@ -81,18 +79,19 @@ except ImportError:
 # 0. 파라미터 설정
 # ══════════════════════════════════════════
 
-# CSI 카메라
-SENSOR_ID    = 0
-CAP_WIDTH    = 1280
-CAP_HEIGHT   = 720
-DISP_WIDTH   = 640
-DISP_HEIGHT  = 480
+# USB 웹캠
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_WIDTH    = 640
+CAM_HEIGHT   = 480
 FPS_TARGET   = 30
-FLIP_METHOD  = 0
+CAM_FOURCC   = "MJPG"   # 대부분 웹캠은 MJPG여야 640×480 30fps가 나옴 (안 되면 "YUYV" 또는 None)
+CAM_MIRROR   = True     # 화면을 거울처럼 좌우 반전 (판정에는 영향 없음)
+CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨리지 않게 (v4l2-ctl 사용)
+CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
-FORCE_SIM_MODE        = True   # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
-ESP32_MAC_ADDR        = "08:3A:F2:B9:79:E2"
+FORCE_SIM_MODE        = False  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
+ESP32_MAC_ADDR        = "08:3A:F2:B9:8C:6A"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
@@ -100,6 +99,10 @@ BT_ACK_RETRY          = 10     # ACK 재시도 횟수
 BT_RECONNECT_INTERVAL = 5.0    # 재연결 시도 간격 (초)
 BT_ABNORMAL_THRESHOLD = 3      # ESP32 비정상 응답 N회 → 프로세스 재시작
 BT_ABNORMAL_RESET_SEC = 30.0   # 이 시간 동안 정상 응답이면 카운트 리셋
+BT_ACK_TIMEOUT        = 1.0    # 명령 1회당 ACK('A') 기다리는 시간 (초)
+BT_HB_ACK_TIMEOUT     = 0.5    # 하트비트 ACK 기다리는 시간 (초) — 타임아웃은 카운트 안 함
+BUZ_DEDUP_SEC         = 5.0    # 같은 번호의 !BUZ 재전송은 이 시간 안이면 소리 한 번만
+BUZ_BANNER_SEC        = 3.5    # 마지막 !BUZ 수신 후 화면 'HANDS ON WHEEL' 표시 시간 (ESP32 반복 간격 3초보다 조금 길게)
 
 # EMA 스무딩
 EMA_ALPHA          = 0.40
@@ -152,15 +155,8 @@ SOUND_DIR           = "./sounds"     # 경고음 wav를 처음 실행 때 자동
 SOUND_VOLUME        = 0.8            # 0.0 ~ 1.0
 LV1_TONE_HZ         = 880            # LV1: 낮은 음 '삑-삑' 1초 간격
 LV2_TONE_HZ         = 1760           # LV2: 높은 음 빠른 연속 '삑삑삑'
-
-# [실험] 검은자(홍채) 위치 추적 — 화면 표시만 (경보에는 쓰지 않음)
-IRIS_TRACK_ENABLE   = False  # 실험 기능 켜기/끄기 (나노에서 프레임당 약 7ms, 일반 카메라에선 대비가 낮아 대부분 무효)
-IRIS_DRAW_INSET     = True   # 오른쪽 위에 펴낸 눈 확대 화면 + 각도 표시
-IRIS_EMA_ALPHA      = 0.3    # 눈 각도 스무딩 (작을수록 안정적, 반응은 느려짐)
-IRIS_MIN_CONTRAST   = 0.12   # 검은자-흰자 밝기 차이(비율)가 이보다 작으면 무효 (어두움·반사·눈 감김)
-IRIS_MAX_HEAD_YAW   = 35.0   # 고개를 정면에서 이보다 많이 돌리면 눈이 찌그러져 보여 무효 처리
-EYE_WIDTH_MM        = 29.0   # 눈꼬리 사이 평균 폭 (각도 환산용 대략값)
-EYE_ROT_RADIUS_MM   = 10.5   # 안구 회전 중심 ~ 검은자 중심 거리 (각도 환산용 대략값)
+BUZ_SOUND_FILE      = None           # ESP32 !BUZ# 알림음. None이면 '띵-동-띵-동' 자동 생성,
+                                     # 녹음한 음성 등을 쓰려면 wav 경로 (예: "./sounds/handsoff_voice.wav")
 
 # BT 통신 실패 재시작
 # --restarted 인자가 있으면 이미 1회 재시작된 것 → 시뮬레이션 모드로 전환
@@ -183,37 +179,70 @@ LEFT_EYE  = [36, 37, 38, 39, 40, 41]
 RIGHT_EYE = [42, 43, 44, 45, 46, 47]
 
 # ══════════════════════════════════════════
-# 1. GStreamer / CSI 카메라
+# 1. USB 웹캠 (V4L2)
 # ══════════════════════════════════════════
-def check_opencv_gstreamer():
-    info = cv2.getBuildInformation()
-    if "GStreamer" in info and "YES" in info.split("GStreamer")[1].split("\n")[0]:
-        print("✅ OpenCV GStreamer 지원 확인")
-    else:
-        print("🚨 [치명적 오류] OpenCV가 GStreamer를 지원하지 않습니다!")
-        sys.exit(1)
+def _apply_v4l2_controls():
+    """웹캠 노출 설정 — 자동 노출이 어두운 곳에서 FPS를 30→15로 낮추는 것 방지.
+    설정 이름이 웹캠·커널마다 달라서 지원되는 이름을 찾아 적용, 없으면 조용히 넘어감."""
+    if not (CAM_KEEP_FPS or CAM_EXPOSURE is not None):
+        return
+    if shutil.which("v4l2-ctl") is None:
+        print("⚠️  [웹캠] v4l2-ctl이 없어 노출 설정을 건너뜁니다 (sudo apt install v4l-utils)")
+        return
+    dev = f"/dev/video{CAM_INDEX}"
+    try:
+        out = subprocess.run(["v4l2-ctl", "-d", dev, "--list-ctrls"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=3).stdout.decode(errors="ignore")
+    except Exception:
+        return
+    names = {line.split()[0] for line in out.splitlines() if line.strip()}
+    pick = lambda *cands: next((c for c in cands if c in names), None)
+    sets = []
+    if CAM_KEEP_FPS:
+        n = pick("exposure_auto_priority", "exposure_dynamic_framerate")
+        if n:
+            sets.append(f"{n}=0")
+    if CAM_EXPOSURE is not None:
+        auto_n = pick("exposure_auto", "auto_exposure")
+        abs_n  = pick("exposure_absolute", "exposure_time_absolute")
+        if auto_n and abs_n:
+            sets += [f"{auto_n}=1", f"{abs_n}={int(CAM_EXPOSURE)}"]   # 1 = 수동 모드
+    for kv in sets:
+        r = subprocess.run(["v4l2-ctl", "-d", dev, "-c", kv], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, timeout=3)
+        msg = "적용" if r.returncode == 0 else "실패: " + r.stderr.decode(errors="ignore").strip()
+        print(f"[웹캠] {kv} {msg}")
 
-def gstreamer_pipeline():
-    return (
-        f"nvarguscamerasrc sensor-id={SENSOR_ID} ! "
-        f"video/x-raw(memory:NVMM), width=(int){CAP_WIDTH}, height=(int){CAP_HEIGHT}, "
-        f"framerate=(fraction){FPS_TARGET}/1 ! "
-        f"nvvidconv flip-method={FLIP_METHOD} ! "
-        f"video/x-raw, width=(int){DISP_WIDTH}, height=(int){DISP_HEIGHT}, format=(string)BGRx ! "
-        f"videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=True"
-    )
 
-class CSICameraStream:
-    """별도 스레드로 CSI 카메라 프레임 지속 수신 (버퍼 지연 방지).
+class CameraStream:
+    """별도 스레드로 웹캠 프레임 지속 수신 (버퍼 지연 방지).
     프레임마다 번호(frame_id)를 매겨, read(last_id)가 '새 프레임'만 넘겨주도록 함."""
     def __init__(self):
-        pipeline = gstreamer_pipeline()
-        self.stream = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        self.stream = cv2.VideoCapture(CAM_INDEX, cv2.CAP_V4L2)
         if not self.stream.isOpened():
-            print("❌ 카메라를 열 수 없습니다.")
+            self.stream = cv2.VideoCapture(CAM_INDEX)          # V4L2 백엔드가 없는 빌드 대비
+        if not self.stream.isOpened():
+            print(f"❌ 웹캠을 열 수 없습니다 (CAM_INDEX={CAM_INDEX}). ls /dev/video* 로 번호를 확인하세요.")
             sys.exit(1)
+        if CAM_FOURCC:
+            self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*CAM_FOURCC))
+        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_WIDTH)
+        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
+        self.stream.set(cv2.CAP_PROP_FPS,          FPS_TARGET)
+        # ※ CAP_PROP_BUFFERSIZE=1 은 쓰지 않음: 웹캠은 버퍼가 1장이면 한 장 처리하는 동안
+        #   다음 프레임을 받을 자리가 없어 한 장씩 건너뜀 → 30fps가 15fps로 떨어짐.
+        #   지연은 별도 스레드가 계속 최신 프레임으로 덮어써서 생기지 않음.
+        _apply_v4l2_controls()                                  # 카메라를 연 뒤에 적용해야 유지됨
         self.grabbed, self.frame = self.stream.read()
-        self.frame_id          = 1 if self.frame is not None else 0
+        if not self.grabbed or self.frame is None:
+            print("❌ 웹캠에서 프레임을 읽지 못했습니다. 다른 프로그램이 카메라를 쓰고 있는지 확인하세요.")
+            sys.exit(1)
+        self.height, self.width = self.frame.shape[:2]
+        fps = self.stream.get(cv2.CAP_PROP_FPS)
+        print(f"✅ 웹캠 {self.width}×{self.height} @ {fps:.0f}fps (요청 {CAM_WIDTH}×{CAM_HEIGHT} @ {FPS_TARGET})")
+        self.frame_id          = 1
+        self.cam_fps           = 0.0      # 실제로 카메라에서 들어오는 속도 (화면 표시용)
+        self._last_t           = None
         self.stopped           = False
         self._lock             = threading.Lock()
         self._new_frame        = threading.Condition(self._lock)
@@ -224,11 +253,17 @@ class CSICameraStream:
         return self
 
     def _update(self):
+        # 이 스레드는 '받아서 넘기기'만 — 좌우 반전 등은 read()에서 (다음 프레임을 놓치지 않게)
         while not self.stopped:
             if self.stream.isOpened():
                 grabbed, frame = self.stream.read()
                 with self._new_frame:
                     if grabbed and frame is not None:
+                        now = time.time()
+                        if self._last_t is not None:
+                            inst = 1.0 / max(now - self._last_t, 1e-3)
+                            self.cam_fps = inst if self.cam_fps == 0 else 0.9 * self.cam_fps + 0.1 * inst
+                        self._last_t           = now
                         self.grabbed           = grabbed
                         self.frame             = frame
                         self.frame_id         += 1
@@ -248,7 +283,8 @@ class CSICameraStream:
                     return self.frame_id, None
             if self.frame is None:
                 return self.frame_id, None
-            return self.frame_id, self.frame.copy()
+            # 반전은 새 배열을 만들므로 복사를 겸함
+            return self.frame_id, (cv2.flip(self.frame, 1) if CAM_MIRROR else self.frame.copy())
 
     @property
     def consecutive_fail(self):
@@ -267,7 +303,7 @@ class CSICameraStream:
 # 2. 블루투스 — ① 자동 재연결 포함
 # ══════════════════════════════════════════
 sock         = None
-sock_lock    = threading.Lock()
+sock_lock    = threading.RLock()   # RLock: _send_command 안에서 _bt_restart가 다시 잡아도 멈추지 않게
 target_state = "OFF"
 is_running   = True
 bt_lock      = threading.Lock()
@@ -276,6 +312,13 @@ bt_lock      = threading.Lock()
 sim_mode      = False         # BT 연결 실패 시 True로 전환
 sim_mode_lock = threading.Lock()
 _sim_log_buf  = []            # 시뮬레이션 상태 변경 기록
+
+# ESP32 → Jetson 수신 처리 (수신은 bt_reader_thread 하나만 함)
+_ack_q          = queue.Queue()      # ESP32가 보낸 명령 응답 줄 ('A' 등)
+sock_write_lock = threading.Lock()   # 여러 스레드가 동시에 send 하지 않도록
+_buz_last_seq   = None
+_buz_last_seq_t = 0.0
+buz_last_time   = 0.0                # 마지막 !BUZ 수신 시각 (화면 배너용)
 
 # ESP32 비정상 응답 카운터
 _bt_abnormal_count    = 0
@@ -321,7 +364,7 @@ def _bt_restart():
     is_running = False
     with sock_lock:
         if sock:
-            try: sock.send("!OFF#\n".encode("utf-8"))
+            try: _bt_write(sock, "!OFF#\n")
             except: pass
             try: sock.close()
             except: pass
@@ -391,48 +434,137 @@ def _init_bluetooth():
     if sock is None:
         _enter_sim_mode("초기 연결 실패")
 
+def _bt_write(s, text: str) -> bool:
+    """소켓에 한 줄 전송 (스레드 간 send 직렬화). 실패하면 False."""
+    if s is None:
+        return False
+    with sock_write_lock:
+        s.send(text.encode("utf-8"))
+    return True
+
+def _drain_acks():
+    while True:
+        try: _ack_q.get_nowait()
+        except queue.Empty: return
+
+def _wait_ack(timeout: float):
+    """응답 줄 하나 기다림. 시간 초과면 None."""
+    try:
+        return _ack_q.get(timeout=timeout)
+    except queue.Empty:
+        return None
+
+def _drop_socket(s, why: str):
+    """끊긴 소켓 정리 → bluetooth_thread가 재연결."""
+    global sock
+    if s is None:
+        return
+    print(f"⚠️  [BT] 연결 끊김: {why}")
+    try: s.close()
+    except Exception: pass
+    if sock is s:
+        sock = None
+
 def _send_command(cmd_text: str) -> bool:
     """
-    명령 전송 + ESP32 응답 판별.
+    명령 전송 + ESP32 응답 판별 (응답은 bt_reader_thread가 _ack_q에 넣어 줌).
     - 'A'  포함 → 정상 ACK  → 카운트 리셋, True 반환
-    - 'E'  포함 → ESP32 에러 응답 → 비정상 카운트 +1
-    - 빈 응답/타임아웃 → 비정상 카운트 +1
-    - 소켓 예외 → sock=None 후 False 반환
+    - 그 외 응답 → 비정상 카운트 +1
+    - BT_ACK_TIMEOUT 동안 응답 없음 → 비정상 카운트 +1
+    - 소켓 예외 → 소켓 정리 후 False 반환
     """
-    global sock
     with sock_lock:
-        if not sock:
+        s = sock
+        if not s:
             return False
-        packet = f"!{cmd_text}#\n".encode("utf-8")
+        packet = f"!{cmd_text}#\n"
         for _ in range(BT_ACK_RETRY):
             if not is_running:
                 return False
             try:
-                sock.send(packet)
-                time.sleep(0.1)
-                try:
-                    res = sock.recv(1024).decode("utf-8", errors="ignore").strip()
-                    if "A" in res:
-                        # ── 정상 ACK ──
-                        _bt_record_normal()
-                        return True
-                    elif res:
-                        # ── ESP32가 응답은 했지만 ACK가 아님 (에러 코드 등) ──
-                        _bt_record_abnormal(f"비정상 응답: '{res}'")
-                    else:
-                        # ── 빈 응답 ──
-                        _bt_record_abnormal("빈 응답(empty)")
-                except socket.timeout:
-                    # ── 응답 없음 ──
-                    _bt_record_abnormal("응답 타임아웃")
+                _drain_acks()                        # 늦게 도착한 이전 응답 버림
+                _bt_write(s, packet)
             except Exception as e:
-                print(f"BT 전송 에러 (재연결 필요): {e}")
-                try: sock.close()
-                except: pass
-                sock = None
+                _drop_socket(s, f"전송 에러 {e}")
                 return False
+            res = _wait_ack(BT_ACK_TIMEOUT)
+            if res is None:
+                if sock is not s:                    # 기다리는 동안 끊김
+                    return False
+                _bt_record_abnormal("응답 타임아웃")
+            elif "A" in res:
+                _bt_record_normal()
+                return True
+            else:
+                _bt_record_abnormal(f"비정상 응답: '{res}'")
             time.sleep(0.1)
     return False
+
+# ──────────────────────────────────────────
+# ESP32 → Jetson 이벤트: !BUZ# (핸들 이탈 등) → 디스플레이 스피커
+#   ESP32 → Jetson : !BUZ:<번호>#      (예전 형식 !BUZ# 도 받음)
+#   Jetson → ESP32 : !BACK:<번호>#     (받았다는 확인. 번호 없는 !BUZ#엔 !BACK#)
+#   ESP32는 !BACK를 못 받으면 같은 번호로 다시 보냄 → 같은 번호는 소리를 한 번만 냄
+# ──────────────────────────────────────────
+def _on_buz(seq, s):
+    global _buz_last_seq, _buz_last_seq_t, buz_last_time
+    now = time.time()
+    try:
+        _bt_write(s, f"!BACK:{seq}#\n" if seq is not None else "!BACK#\n")
+    except Exception as e:
+        _drop_socket(s, f"BACK 전송 에러 {e}")
+    if seq is not None and seq == _buz_last_seq and now - _buz_last_seq_t < BUZ_DEDUP_SEC:
+        return                                       # 재전송된 같은 이벤트 → 소리 중복 안 함
+    _buz_last_seq, _buz_last_seq_t = seq, now
+    buz_last_time = now
+    print(f"🔔 [ESP32] !BUZ 수신 (번호 {seq}) → 디스플레이 스피커 알림음")
+    if _alarm_sound is not None:
+        _alarm_sound.play_buz()
+
+def _handle_rx_line(line: str, s):
+    if not line:
+        return
+    if line.startswith("!") and line.endswith("#"):
+        body = line[1:-1]
+        if body.startswith("BUZ"):
+            seq = None
+            if ":" in body:
+                try: seq = int(body.split(":", 1)[1])
+                except ValueError: pass
+            _on_buz(seq, s)
+        else:
+            print(f"[BT] 알 수 없는 ESP32 메시지: {line}")
+        return
+    _ack_q.put(line)                                 # 'A' 같은 명령 응답
+
+def bt_reader_thread():
+    """ESP32에서 오는 데이터를 혼자 다 읽어서 줄 단위로 나눔 → 응답은 _ack_q, 이벤트는 바로 처리."""
+    cur, buf = None, b""
+    while is_running:
+        s = sock
+        if s is None:
+            cur, buf = None, b""
+            time.sleep(0.1)
+            continue
+        if s is not cur:                             # 새 연결 → 버퍼 비움
+            cur, buf = s, b""
+        try:
+            data = s.recv(1024)
+        except socket.timeout:
+            continue
+        except OSError as e:
+            if sock is s:
+                _drop_socket(s, f"수신 에러 {e}")
+            continue
+        if not data:
+            _drop_socket(s, "ESP32가 연결을 닫음")
+            continue
+        buf += data
+        while b"\n" in buf:
+            raw, buf = buf.split(b"\n", 1)
+            _handle_rx_line(raw.decode("utf-8", errors="ignore").strip(), s)
+        if len(buf) > 4096:                          # 줄바꿈 없는 쓰레기 데이터 방지
+            buf = b""
 
 def bluetooth_thread():
     """① 자동 재연결: sock이 None이면 BT_RECONNECT_INTERVAL마다 재시도"""
@@ -480,24 +612,19 @@ def bluetooth_thread():
         if now - last_heartbeat >= BT_HEARTBEAT_INTERVAL:
             with sock_lock:
                 s = sock
-            if s:
-                try:
-                    s.send("!H#\n".encode("utf-8"))
-                    time.sleep(0.05)
+                if s:
                     try:
-                        res = s.recv(1024).decode("utf-8", errors="ignore").strip()
-                        if "A" in res:
-                            _bt_record_normal()
-                        elif res:
-                            _bt_record_abnormal(f"하트비트 비정상 응답: '{res}'")
+                        _drain_acks()
+                        _bt_write(s, "!H#\n")
+                        res = _wait_ack(BT_HB_ACK_TIMEOUT)
+                        if res is not None:
+                            if "A" in res:
+                                _bt_record_normal()
+                            else:
+                                _bt_record_abnormal(f"하트비트 비정상 응답: '{res}'")
                         # 타임아웃은 하트비트에서 허용 (카운트 안 함)
-                    except socket.timeout:
-                        pass
-                except Exception:
-                    with sock_lock:
-                        try: sock.close()
-                        except: pass
-                        sock = None
+                    except Exception as e:
+                        _drop_socket(s, f"하트비트 전송 에러 {e}")
             last_heartbeat = now
 
         time.sleep(0.05)
@@ -1143,14 +1270,12 @@ class HeadPoseEstimator:
     68점 랜드마크 중 6점 + cv2.solvePnP → 머리 각도 (yaw, pitch, roll) [도].
       yaw  : 좌우 회전 (부호는 화면 기준, 판정에는 크기만 사용)
       pitch: + 아래로 숙임 / - 위로 젖힘
-    · 초점거리는 '캡처 가로폭' 근사값. 판정은 캘리브레이션 때의 정면과의 '차이'만 쓰므로 정확할 필요 없음
-    · 1280×720 → 640×480처럼 가로·세로 축소 비율이 다르면 fx, fy를 따로 잡아 각도 왜곡 보정
+    · 초점거리는 '영상 가로폭' 근사값. 판정은 캘리브레이션 때의 정면과의 '차이'만 쓰므로 정확할 필요 없음
     · 직전 프레임 결과를 초기값으로 써서 빠르고 안정적으로 수렴
     """
 
     def __init__(self, frame_w: int, frame_h: int):
-        fx = float(frame_w)                              # f ≈ 캡처 가로폭 → 출력 가로 기준
-        fy = float(CAP_WIDTH) * frame_h / CAP_HEIGHT     # 세로 축소 비율 반영
+        fx = fy = float(frame_w)                         # f ≈ 영상 가로폭 (웹캠은 정사각 픽셀)
         self.K    = np.array([[fx, 0.0, frame_w / 2.0],
                               [0.0, fy, frame_h / 2.0],
                               [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -1315,175 +1440,7 @@ def _cause_text(drowsy_cause: str, d_level: int, distract) -> str:
 
 
 # ══════════════════════════════════════════
-# 6-3. [실험] 검은자(홍채) 위치 추적 — 화면 표시만, 경보와 무관
-# ══════════════════════════════════════════
-class IrisTracker:
-    """
-    [실험] 눈 안에서 검은자(홍채)의 가로 위치를 찾아 '눈만 돌린 각도'를 대략 추정.
-      1) 양쪽 눈꼬리를 기준으로 눈을 수평으로 펴서 잘라냄 (고개 기울기 제거, 약 2배 확대)
-      2) 눈꺼풀 사이(속눈썹 쪽은 조금 잘라냄) 세로 열마다 중앙값 밝기 → 가로 밝기 곡선
-      3) 검은자 폭(눈 폭의 약 40%)만큼 어둡고 옆(흰자)이 밝은 위치 = 검은자 중심
-         (양옆이 다 밝은 곳 우선 → 한쪽만 밝은 눈꼬리 그늘·아이라인에 덜 속음)
-         직전 프레임 위치 근처를 우선해서 비슷한 후보 사이를 오가며 튀는 것을 줄임
-      4) 눈 폭 대비 비율(0=화면 왼쪽 눈꼬리, 1=오른쪽)을 캘리브레이션 때 정면 비율과 비교 → 각도
-    각도 부호는 머리 yaw와 같음 (+ = 화면 왼쪽 방향). 시선 ≈ 머리 yaw + 눈 각도.
-    눈을 감았거나 너무 어두워 검은자-흰자 대비가 낮으면 그 눈은 무효 처리.
-    """
-    EW, MARGIN, H = 48, 8, 32          # 펴낸 눈: 눈꼬리 간격 48px, 크롭 64×32
-
-    def __init__(self):
-        self.W    = self.EW + 2 * self.MARGIN
-        self._xs  = np.arange(self.W, dtype=np.float32)
-        self._yy  = np.arange(self.H, dtype=np.float32)[:, None]
-        self._dst = np.float32([[self.MARGIN, self.H / 2],
-                                [self.MARGIN + self.EW, self.H / 2],
-                                [self.MARGIN, self.H / 2 + self.EW]])
-        self._cols = np.arange(self.W)
-        self._span = (self._xs >= self.MARGIN) & (self._xs <= self.MARGIN + self.EW)
-        rc = int(round(0.2 * self.EW))             # 검은자 반지름 ≈ 눈 폭의 20%
-        wf = int(round(0.15 * self.EW))            # 양옆 흰자 확인 폭
-        X  = np.arange(int(np.ceil(self.MARGIN + 0.12 * self.EW)),
-                       int(np.floor(self.MARGIN + 0.88 * self.EW)) + 1)
-        self._cand = X
-        c = lambda v: np.clip(v, 0, self.W)        # 후보마다 [가운데 / 왼쪽 / 오른쪽] 구간 (고정)
-        self._win  = (c(X - rc), c(X + rc + 1), c(X - rc - wf), c(X - rc), c(X + rc + 1), c(X + rc + 1 + wf))
-        self._minC = 0.6 * (2 * rc + 1)
-        self._minF = 0.3 * wf
-        self.reset(verbose=False)
-
-    def reset(self, verbose: bool = True):
-        self.calib   = []           # 캘리브레이션 중 [왼눈 비율, 오른눈 비율] (화면 기준)
-        self.base    = None         # 정면 비율
-        self._ema    = EMAFilter(IRIS_EMA_ALPHA)
-        self.eyes    = [None, None]
-        self.valid   = False        # 이번 프레임에 쓸 만한 측정이 있었는지
-        self.eye_deg = None         # 정면 대비 눈 각도 (도)
-        self._prev   = [None, None] # 눈별 직전 검은자 위치 (크롭 x) — 프레임 간 연속성
-        self._miss   = [0, 0]       # 연속 무효 프레임 수 (5번 넘으면 직전 위치 버림)
-        if verbose:
-            print("[검은자 추적] 정면 기준 초기화 — 캘리브레이션 동안 다시 잡음")
-
-    def _eye(self, frame: np.ndarray, p: np.ndarray, prev_x=None):
-        """한쪽 눈 6점 (0=화면 왼쪽 눈꼬리, 1·2=윗눈꺼풀, 3=오른쪽 눈꼬리, 4·5=아랫눈꺼풀).
-        prev_x: 직전 프레임 검은자 위치 — 비슷하게 어두운 곳이 둘이면 가까운 쪽을 유지."""
-        pl, pr = p[0], p[3]
-        d = pr - pl
-        if float(np.hypot(d[0], d[1])) < 6.0:
-            return None
-        src  = np.float32([pl, pr, pl + np.array([-d[1], d[0]], dtype=np.float32)])
-        A    = cv2.getAffineTransform(src, self._dst)
-        crop = cv2.warpAffine(frame, A, (self.W, self.H), flags=cv2.INTER_LINEAR,
-                              borderMode=cv2.BORDER_REPLICATE)
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        q    = p @ A[:, :2].T + A[:, 2]                         # 6점 → 크롭 좌표
-
-        up, lo = q[[0, 1, 2, 3]], q[[0, 5, 4, 3]]
-        o = np.argsort(up[:, 0]); top = np.interp(self._xs, up[o, 0], up[o, 1])
-        o = np.argsort(lo[:, 0]); bot = np.interp(self._xs, lo[o, 0], lo[o, 1])
-        opening = bot - top
-        y0, y1  = top + 0.2 * opening, bot - 0.1 * opening      # 속눈썹 쪽 20% 제외
-        band    = (self._yy >= y0) & (self._yy <= y1) & (opening > 2.0)
-        cnt     = band.sum(0)
-        valid   = (cnt >= 2) & self._span
-
-        e = {"crop": crop, "q": q, "x": None, "ratio": None, "contrast": 0.0, "pt": None}
-        if valid.sum() < 0.4 * self.EW:
-            return e
-        # 열마다 '중앙값' 밝기 — 속눈썹·아이라인처럼 눈꺼풀을 따라가는 가는 어두운 선에 덜 흔들림
-        # (띠 밖 픽셀은 큰 값으로 밀어내고 정렬 → 가운데 값. nanmedian보다 훨씬 빠름)
-        g = np.where(band, gray, np.float32(1e6))
-        g.sort(axis=0)
-        prof = np.where(valid, g[np.maximum(cnt - 1, 0) // 2, self._cols], 0.0)
-        # 후보 위치마다: [옆(흰자) 평균 밝기] - [검은자 폭 평균 밝기] → 클수록 검은자
-        # 양옆이 다 밝으면 그대로, 한쪽만 밝으면(눈꼬리 쪽) 점수 ×0.6
-        # → 한쪽만 밝은 눈꼬리 그늘·아이라인에 덜 속으면서, 눈꼬리 쪽으로 쏠린 시선도 따라감
-        cs = np.concatenate(([0.0], np.cumsum(prof)))
-        cc = np.concatenate(([0], np.cumsum(valid)))
-        aC, bC, aL, bL, aR, bR = self._win
-        sC, nC = cs[bC] - cs[aC], cc[bC] - cc[aC]
-        sL, nL = cs[bL] - cs[aL], cc[bL] - cc[aL]
-        sR, nR = cs[bR] - cs[aR], cc[bR] - cc[aR]
-        okC    = nC >= self._minC
-        hL, hR = nL >= self._minF, nR >= self._minF
-        mL, mR = sL / np.maximum(nL, 1), sR / np.maximum(nR, 1)
-        both   = okC & hL & hR
-        one    = okC & (hL ^ hR)
-        flank  = np.where(both, 0.5 * (mL + mR), np.where(hL, mL, mR))
-        diff   = flank - sC / np.maximum(nC, 1)
-        score  = np.where(both, diff, np.where(one, 0.6 * diff, -np.inf))
-        ok     = both | one
-        if not ok.any():
-            return e
-        X = self._cand
-        j = int(np.argmax(score))
-        if prev_x is not None:                                  # 직전 위치 근처를 우선
-            near = np.flatnonzero((np.abs(X - prev_x) <= 0.15 * self.EW) & ok)
-            if near.size:
-                jl = int(near[np.argmax(score[near])])
-                # 전체 최고점이 '확실히'(근처 점수의 25% 이상) 높을 때만 건너뜀
-                if score[j] <= score[jl] + 0.25 * max(float(score[jl]), 1e-6):
-                    j = jl
-        off = 0.0
-        if 0 < j < len(X) - 1 and np.isfinite(score[j - 1]) and np.isfinite(score[j + 1]):
-            a, b, c = score[j - 1], score[j], score[j + 1]          # 포물선 보간 (소수점 위치)
-            den = a - 2 * b + c
-            if den < -1e-6:
-                off = float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
-        x  = float(X[j]) + off
-        ym = 0.5 * (float(np.interp(x, self._xs, y0)) + float(np.interp(x, self._xs, y1)))
-        Ai = cv2.invertAffineTransform(A)
-        e.update(x=x, ratio=(x - self.MARGIN) / self.EW,
-                 contrast=float(score[j]) / max(float(flank[j]), 1.0),
-                 pt=(float(Ai[0, 0] * x + Ai[0, 1] * ym + Ai[0, 2]),
-                     float(Ai[1, 0] * x + Ai[1, 1] * ym + Ai[1, 2])))
-        return e
-
-    def _usable(self, e) -> bool:
-        return e is not None and e["ratio"] is not None and e["contrast"] >= IRIS_MIN_CONTRAST
-
-    def update(self, frame: np.ndarray, landmarks: np.ndarray, eyes_open: bool, calibrating: bool):
-        """양쪽 눈 측정. 캘리브레이션 동안은 정면 비율 수집, 이후엔 정면 대비 눈 각도 계산.
-        eyes_open=False면 (눈 감김·고개를 크게 돌림) 측정하지 않음.
-        ※ 프레임에 아무것도 그리기 전에 호출할 것 (점·선이 눈에 겹치면 측정이 틀어짐)."""
-        self.eyes = [self._eye(frame, landmarks[idx].astype(np.float32), self._prev[k])
-                     if eyes_open else None
-                     for k, idx in enumerate((LEFT_EYE, RIGHT_EYE))]
-        ratios = [e["ratio"] if self._usable(e) else None for e in self.eyes]
-        for k, e in enumerate(self.eyes):                    # 프레임 간 연속성 상태 갱신
-            if self._usable(e):
-                self._prev[k], self._miss[k] = e["x"], 0
-            else:
-                self._miss[k] += 1
-                if self._miss[k] > 5:
-                    self._prev[k] = None
-        if calibrating:
-            self.calib.append(ratios)
-            self.valid, self.eye_deg = False, None
-            return
-        if self.base is None:
-            self._finalize()
-        deltas = [r - b for r, b in zip(ratios, self.base) if r is not None]
-        if not deltas:                       # 깜빡임·어두움·반사 → 이번 프레임은 무효
-            self.valid = False
-            return
-        dlt = self._ema.update(float(np.mean(deltas)))
-        s   = float(np.clip(dlt * EYE_WIDTH_MM / EYE_ROT_RADIUS_MM, -1.0, 1.0))
-        self.eye_deg = -float(np.degrees(np.arcsin(s)))      # 비율↑ = 화면 오른쪽 → 부호 반대
-        self.valid   = True
-
-    def _finalize(self):
-        base = []
-        for k in range(2):
-            v = [r[k] for r in self.calib if r[k] is not None]
-            base.append(float(np.median(v)) if len(v) >= 5 else 0.5)
-        self.base = base
-        n = sum(1 for r in self.calib if r[0] is not None or r[1] is not None)
-        print(f"[검은자 기준] 정면 비율 화면 왼쪽 눈 {base[0]:.2f} / 오른쪽 눈 {base[1]:.2f} "
-              f"(유효 프레임 {n}/{len(self.calib)})")
-
-
-# ══════════════════════════════════════════
-# 6-4. 경고음 — 디스플레이 스피커 (aplay, 추가 설치 불필요)
+# 6-3. 경고음 — 디스플레이 스피커 (aplay, 추가 설치 불필요)
 # ══════════════════════════════════════════
 class AlarmSound:
     """
@@ -1502,12 +1459,21 @@ class AlarmSound:
         self._stop   = False
         self._fails  = 0
         self.files   = {}
+        self._buz_pending = False
+        self._playing     = 0              # 지금 재생 중: 0 없음, 1/2 단계음, "buz" 알림음
         if SOUND_ENABLE and not self.enabled:
             print("⚠️  [경고음] aplay를 찾지 못해 경고음 없이 동작합니다 (sudo apt install alsa-utils)")
         if self.enabled:
             os.makedirs(SOUND_DIR, exist_ok=True)
             self.files[1] = self._make_wav("lv1.wav", LV1_TONE_HZ, [(0.18, True), (0.12, False), (0.18, True), (0.52, False)])
             self.files[2] = self._make_wav("lv2.wav", LV2_TONE_HZ, [(0.09, True), (0.04, False)] * 4)
+            if BUZ_SOUND_FILE and os.path.isfile(BUZ_SOUND_FILE):
+                self.files["buz"] = BUZ_SOUND_FILE
+            else:
+                if BUZ_SOUND_FILE:
+                    print(f"⚠️  [경고음] BUZ_SOUND_FILE({BUZ_SOUND_FILE}) 없음 → 기본 알림음 사용")
+                self.files["buz"] = self._make_wav_seq("buz.wav", [(1320, 0.22), (0, 0.06), (990, 0.30), (0, 0.12),
+                                                                  (1320, 0.22), (0, 0.06), (990, 0.30)])
             print(f"✅ [경고음] 디스플레이 스피커 사용 ({SOUND_DEVICE})")
 
     def _make_wav(self, name, hz, pattern):
@@ -1530,6 +1496,38 @@ class AlarmSound:
             w.writeframes(pcm.tobytes())
         return path
 
+    def _make_wav_seq(self, name, notes):
+        """notes: [(주파수 Hz, 초), ...] — 주파수 0은 쉼. 단계음과 구별되게 두 음을 번갈아."""
+        chunks = []
+        for hz, sec in notes:
+            n = int(self.RATE * sec)
+            if hz:
+                t = np.arange(n) / self.RATE
+                tone = np.sin(2 * np.pi * hz * t) + 0.3 * np.sin(2 * np.pi * 2 * hz * t)
+                f = min(int(0.008 * self.RATE), n // 2)
+                env = np.ones(n); env[:f] = np.linspace(0, 1, f); env[n - f:] = np.linspace(1, 0, f)
+                chunks.append(tone / 1.3 * env)
+            else:
+                chunks.append(np.zeros(n))
+        pcm = (np.concatenate(chunks) * SOUND_VOLUME * 32767).astype(np.int16)
+        path = os.path.join(SOUND_DIR, name)
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(self.RATE)
+            w.writeframes(pcm.tobytes())
+        return path
+
+    def play_buz(self):
+        """ESP32 !BUZ# → 알림음 1회. 단계음이 울리는 중이면 잠깐 끊고 알림음 → 끝나면 단계음 다시.
+        (HDMI 출력 장치는 한 번에 소리 하나만 낼 수 있어서 겹치지 않고 순서대로)"""
+        if not self.enabled:
+            return
+        with self._cond:
+            if self._playing == "buz":
+                return                         # 이미 알림음 재생 중
+            self._buz_pending = True
+            self._kill()
+            self._cond.notify_all()
+
     def start(self):
         if self.enabled:
             threading.Thread(target=self._loop, daemon=True).start()
@@ -1543,7 +1541,8 @@ class AlarmSound:
             if level == self._level:
                 return
             self._level = level
-            self._kill()                       # 바뀌면 지금 소리를 바로 끊음
+            if self._playing != "buz":         # 알림음은 끝까지 재생, 끝나면 새 단계음
+                self._kill()                   # 바뀌면 지금 소리를 바로 끊음
             self._cond.notify_all()
 
     def _kill(self):
@@ -1555,11 +1554,16 @@ class AlarmSound:
     def _loop(self):
         while True:
             with self._cond:
-                while self._level == 0 and not self._stop:
+                while self._level == 0 and not self._buz_pending and not self._stop:
                     self._cond.wait()
                 if self._stop:
                     return
-                lv = self._level
+                if self._buz_pending:
+                    self._buz_pending = False
+                    lv = "buz"
+                else:
+                    lv = self._level
+                self._playing = lv
                 try:
                     self._proc = subprocess.Popen(["aplay", "-q", "-D", SOUND_DEVICE, self.files[lv]],
                                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -1569,7 +1573,9 @@ class AlarmSound:
                     return
                 proc = self._proc
             _, err = proc.communicate()        # 소리 하나 끝날 때까지 (끊기면 바로 반환)
-            if proc.returncode not in (0, -15) and self._level == lv:
+            with self._cond:
+                self._playing = 0
+            if proc.returncode not in (0, -15) and (lv == "buz" or self._level == lv):
                 self._fails += 1
                 msg = err.decode(errors="ignore").strip().splitlines()
                 print(f"⚠️  [경고음] aplay 오류: {msg[-1] if msg else proc.returncode}")
@@ -1602,10 +1608,26 @@ STATE_COLORS = {
     "LV2_DANGER" : (0,   0,   255),
 }
 
+def _draw_buz_banner(frame):
+    """ESP32에서 !BUZ#가 들어온 뒤 BUZ_BANNER_SEC 동안 화면 아래쪽에 'HANDS ON WHEEL!' (깜빡임)."""
+    if buz_last_time <= 0 or time.time() - buz_last_time > BUZ_BANNER_SEC:
+        return
+    if int(time.time() * 3) % 2:
+        return
+    h, w = frame.shape[:2]
+    text = "HANDS ON WHEEL!"
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 3)
+    x, y = (w - tw) // 2, h - 110
+    cv2.rectangle(frame, (x - 12, y - th - 12), (x + tw + 12, y + 12), (0, 0, 200), -1)
+    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
+
+
 def draw_overlay(frame, state, fps, perclos, ear, threshold,
                  is_calibrated, calib_rem, bt_ok,
-                 proc_ms=None, head_info=None, cause="", calib_phase="open", closed_dur=0.0):
+                 proc_ms=None, head_info=None, cause="", calib_phase="open", closed_dur=0.0,
+                 cam_fps=None):
     h, w = frame.shape[:2]
+    _draw_buz_banner(frame)
     # 상단 바 반투명 처리 — 바 영역(56줄)만 계산
     # (예전: 프레임 전체 복사 + 전체 합성. 결과 픽셀은 동일: 0.6×20 + 0.4×원본)
     frame[:56] = cv2.convertScaleAbs(frame[:56], alpha=0.4, beta=12.0)
@@ -1615,7 +1637,8 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
     if proc_ms is not None:   # 프레임당 처리 시간 → 33ms(30fps)에서 이 값을 뺀 만큼이 여유
         tw = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0][0]
-        cv2.putText(frame, f"{proc_ms:.0f}ms", (18 + tw, 38),
+        extra = f"  cam {cam_fps:.0f}" if cam_fps else ""     # cam = 카메라가 실제로 주는 fps
+        cv2.putText(frame, f"{proc_ms:.0f}ms{extra}", (18 + tw, 38),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
     # 블루투스 / 시뮬레이션 상태 표시
@@ -1667,7 +1690,7 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
                 (10, bar_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
     # R키 안내
-    cv2.putText(frame, "R: recalibrate", (10, h - 8),
+    cv2.putText(frame, "R: recalibrate  B: buz test", (10, h - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1)
 
     # 하단 바 오른쪽: 경보 원인 / 머리 각도(정면 대비) / 최근 30초 이탈 누적
@@ -1678,49 +1701,6 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
         dyaw, dpitch, vats = head_info
         cv2.putText(frame, f"HEAD Y{round(dyaw):+d} P{round(dpitch):+d}  OFF {vats:.0f}/{VATS_WINDOW_SEC:.0f}s",
                     (w // 2 + 10, bar_y + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-
-
-def draw_iris(frame, iris_trk, head_dyaw=None):
-    """[실험] 검은자: 프레임 위 자홍 점 + 오른쪽 위 펴낸 눈 확대 화면 + 눈 각도 / 시선 각도."""
-    h, w = frame.shape[:2]
-    S = 2
-    cw, ch = iris_trk.W * S, iris_trk.H * S
-    x0, y0 = w - (2 * cw + 6) - 8, 62
-    for k, e in enumerate(iris_trk.eyes):
-        if e is None:
-            continue
-        col = (255, 0, 255) if iris_trk._usable(e) else (128, 128, 128)
-        if e["pt"] is not None:
-            cv2.circle(frame, (int(round(e["pt"][0])), int(round(e["pt"][1]))), 2, col, -1)
-        if IRIS_DRAW_INSET:
-            big = cv2.resize(e["crop"], (cw, ch), interpolation=cv2.INTER_NEAREST)
-            qs = np.round(e["q"] * S).astype(np.int32)
-            cv2.polylines(big, [qs[[0, 1, 2, 3]], qs[[0, 5, 4, 3]]], False, (0, 255, 255), 1)
-            if e["x"] is not None:
-                xi = int(round(e["x"] * S))
-                cv2.line(big, (xi, 0), (xi, ch - 1), col, 1)
-            xa = x0 + k * (cw + 6)
-            if xa >= 0 and y0 + ch <= h:
-                frame[y0:y0 + ch, xa:xa + cw] = big
-    if not IRIS_DRAW_INSET:
-        return
-    ty = y0 + ch + 16
-    if iris_trk.base is None:
-        txt = "EYE (calibrating)"
-    elif iris_trk.valid and iris_trk.eye_deg is not None:
-        txt = f"EYE {round(iris_trk.eye_deg):+d}deg"
-        if head_dyaw is not None:
-            txt += f"  GAZE {round(head_dyaw + iris_trk.eye_deg):+d}deg"
-    else:
-        txt = "EYE --"
-    cv2.putText(frame, txt, (x0, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-    parts = []
-    for name, e in zip(("L", "R"), iris_trk.eyes):
-        if e is None or e["ratio"] is None:
-            parts.append(f"{name} --")
-        else:
-            parts.append(f"{name} {e['ratio']:.2f} c{e['contrast']:.2f}")
-    cv2.putText(frame, "  ".join(parts), (x0, ty + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
 
 def draw_no_face(frame, is_calibrated: bool, missing_sec: float):
@@ -1742,8 +1722,6 @@ def draw_no_face(frame, is_calibrated: bool, missing_sec: float):
 # ══════════════════════════════════════════
 def main():
     global target_state, is_running, _alarm_sound
-
-    check_opencv_gstreamer()
 
     # 모델 파일 사전 점검 (ONNX 또는 이미 변환된 엔진 중 하나는 있어야 함)
     for model_path in (FACE_DET_MODEL, LANDMARK_MODEL):
@@ -1769,9 +1747,8 @@ def main():
         sys.exit(1)
     print("✅ TensorRT 추론 엔진 준비 완료")
 
-    vs = CSICameraStream().start()
-    time.sleep(2.0)
-    print("✅ CSI 카메라 시작")
+    vs = CameraStream().start()
+    time.sleep(1.0)                               # 웹캠 자동 노출이 자리 잡을 시간
 
     ema          = EMAFilter(EMA_ALPHA)
     judge        = DrowsinessJudge()          # 졸음 판정 (연속 눈 감김 + PERCLOS, 시간 기준)
@@ -1780,9 +1757,8 @@ def main():
     )
     print(f"캘리브레이션: 정면 보고 눈 뜨기 {CALIB_OPEN_SEC:.0f}초"
           + (f" → 화면에 CLOSE EYES가 뜨면 눈 감기 {CALIB_CLOSED_SEC:.0f}초" if CALIB_CLOSED_SEC > 0 else ""))
-    head_est = HeadPoseEstimator(DISP_WIDTH, DISP_HEIGHT) if HEAD_POSE_ENABLE else None
+    head_est = HeadPoseEstimator(vs.width, vs.height) if HEAD_POSE_ENABLE else None
     distract = DistractionMonitor()
-    iris_trk = IrisTracker() if IRIS_TRACK_ENABLE else None     # [실험] 검은자 위치
     sound    = AlarmSound().start()                              # 디스플레이 스피커 경고음
     _alarm_sound = sound
     fps_ema  = EMAFilter(0.1)     # 화면 표시용 (순간값은 출렁여서 평균)
@@ -1825,7 +1801,6 @@ def main():
             d_level      = distract.level     # 전방 주시 태만 단계 (0/1/2)
             drowsy_cause = ""                 # 이번 프레임 졸음 경보 원인 (화면 표시용)
             head         = None
-            iris_ran     = False
 
             if bboxes:
                 face_missing_start = 0.0
@@ -1852,16 +1827,6 @@ def main():
                     left_pts  = landmarks[LEFT_EYE]
                     right_pts = landmarks[RIGHT_EYE]
                     raw_ear   = (calculate_ear(left_pts) + calculate_ear(right_pts)) / 2.0
-
-                    # ── [실험] 검은자 위치 — 프레임에 아무것도 그리기 전에 측정 ──
-                    if iris_trk is not None:
-                        eyes_open = (adaptive_thr.baseline is None
-                                     or raw_ear >= 0.7 * adaptive_thr.baseline)
-                        head_ok   = (head is None or distract.base is None
-                                     or abs(distract.dyaw) < IRIS_MAX_HEAD_YAW)
-                        iris_trk.update(frame, landmarks, eyes_open and head_ok,
-                                        calibrating=not adaptive_thr.is_calibrated)
-                        iris_ran = True
 
                     # ── 측정이 끝난 뒤 표시 ──
                     if head is not None and DRAW_HEAD_AXIS:
@@ -1890,8 +1855,7 @@ def main():
                 # 졸음 판정과 전방 주시 태만 중 더 위험한 단계로
                 state = _worse(state, d_level, adaptive_thr.is_calibrated)
 
-                with sock_lock:
-                    bt_ok = sock is not None
+                bt_ok = sock is not None      # 락 안 잡음 — BT 재시도 중에도 화면이 멈추지 않게
 
                 draw_overlay(
                     frame, state, fps, perclos, ema_ear,
@@ -1900,15 +1864,13 @@ def main():
                     adaptive_thr.calib_remaining(),
                     bt_ok,
                     proc_ms=proc_ema.value,
+                    cam_fps=getattr(vs, "cam_fps", None),
                     head_info=((distract.dyaw, distract.dpitch, distract.vats_sum)
                                if head is not None and distract.base is not None else None),
                     cause=_cause_text(drowsy_cause, d_level, distract),
                     calib_phase=adaptive_thr.phase,
                     closed_dur=judge.closed_dur if adaptive_thr.is_calibrated else 0.0,
                 )
-                if iris_ran:
-                    draw_iris(frame, iris_trk,
-                              distract.dyaw if (head is not None and distract.base is not None) else None)
 
             else:
                 adaptive_thr.update(0.0, 0.0)
@@ -1926,8 +1888,7 @@ def main():
                          else "OFF")
                 state = _worse(state, d_level, adaptive_thr.is_calibrated)
 
-                with sock_lock:
-                    bt_ok = sock is not None
+                bt_ok = sock is not None      # 락 안 잡음 — BT 재시도 중에도 화면이 멈추지 않게
 
                 draw_no_face(frame, adaptive_thr.is_calibrated, missing_sec)
                 perclos = judge.perclos
@@ -1937,6 +1898,7 @@ def main():
                     adaptive_thr.calib_remaining(),
                     bt_ok,
                     proc_ms=proc_ema.value,
+                    cam_fps=getattr(vs, "cam_fps", None),
                     cause=_cause_text("", d_level, distract),
                     calib_phase=adaptive_thr.phase,
                 )
@@ -1959,6 +1921,11 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            elif key == ord("b"):
+                print("🔔 [B키] ESP32 !BUZ# 알림음 테스트")
+                buz_test_now = time.time()
+                globals()["buz_last_time"] = buz_test_now
+                sound.play_buz()
             elif key == ord("r"):
                 # 새 탑승자 → 캘리브레이션 전체 리셋
                 adaptive_thr.reset()
@@ -1970,8 +1937,6 @@ def main():
                 distract.reset()                  # 머리 자세 '정면'도 다시 잡음
                 if head_est is not None:
                     head_est.reset()
-                if iris_trk is not None:
-                    iris_trk.reset()              # 검은자 '정면' 위치도 다시 잡음
                 with bt_lock:
                     target_state = "OFF"
                 sound.set_level(0)
@@ -1985,7 +1950,7 @@ def main():
         vs.stop()
         with sock_lock:
             if sock:
-                try: sock.send("!OFF#\n".encode("utf-8"))
+                try: _bt_write(sock, "!OFF#\n")
                 except: pass
                 try: sock.close()
                 except: pass
@@ -1999,4 +1964,5 @@ if __name__ == "__main__":
     print("=== 젯슨 나노 졸음 감지 시스템 (TensorRT 버전) 시작 ===")
     _init_bluetooth()
     threading.Thread(target=bluetooth_thread, daemon=True).start()
+    threading.Thread(target=bt_reader_thread, daemon=True).start()
     main()
