@@ -90,7 +90,7 @@ CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨�
 CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
-FORCE_SIM_MODE        = True  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
+FORCE_SIM_MODE        = False  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
 ESP32_MAC_ADDR        = "08:3A:F2:B9:8C:6A"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
@@ -161,9 +161,9 @@ LV2_TONE_HZ         = 1760           # LV2: 높은 음 빠른 연속 '삑삑삑'
 # 전시용 웹 UI (Flask) — 같은 폴더의 exhibit_ui.html을 http://localhost:5000 으로 띄움
 WEB_UI_ENABLE       = True
 WEB_PORT            = 5000
-WEB_STREAM_FPS      = 15             # 웹으로 보내는 영상 fps (판정은 카메라 30fps 그대로). 무거우면 10
-WEB_STREAM_WIDTH    = 640            # 웹 영상 가로 크기 (더 줄이면 압축 부담 감소, 예: 480)
-WEB_JPEG_QUALITY    = 75
+WEB_STREAM_FPS      = 10             # 웹으로 보내는 영상 fps (판정은 카메라 30fps 그대로). 더 가볍게: 6~8
+WEB_STREAM_WIDTH    = 480            # 웹 영상 가로 크기 (작을수록 압축·브라우저 부담 감소, 예: 400)
+WEB_JPEG_QUALITY    = 70
 WEB_UI_AUTO_OPEN    = True           # 프로그램 실행 시 두 번째 모니터에 UI 자동으로 띄움 (start_exhibit_ui.sh 사용)
 WEB_UI_MONITOR      = ""             # 띄울 모니터 이름 (xrandr 이름, 예: "DP-0"). 빈칸이면 자동 선택
 BUZ_SOUND_FILE      = None           # ESP32 !BUZ# 알림음. None이면 '띵-동-띵-동' 자동 생성,

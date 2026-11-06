@@ -60,7 +60,7 @@
   }
   .chip b { color: var(--text); font-weight: 700; }
   .dot { width: 1vh; height: 1vh; border-radius: 50%; background: var(--muted); }
-  .dot.on { background: var(--ok); box-shadow: 0 0 0.8vh var(--ok); }
+  .dot.on { background: var(--ok); }
   .dot.off { background: var(--danger); }
   .dot.sim { background: var(--warn); }
   .clock { font-variant-numeric: tabular-nums; font-size: 2.4vh; font-weight: 700; color: var(--text); }
@@ -80,34 +80,28 @@
     display: grid; place-items: center;
     background: #05080b;
     border: 2px solid rgba(var(--level-rgb), .55);
-    box-shadow: 0 0 0 0 transparent;
-    transition: border-color .3s, box-shadow .3s;
+    transition: border-color .3s;
   }
-  body[data-level="1"] .video-card { box-shadow: 0 0 3vh -0.5vh var(--warn); }
-  body[data-level="2"] .video-card { animation: pulse 0.8s ease-in-out infinite; }
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 1vh 0 var(--danger); }
-    50% { box-shadow: 0 0 5vh 0.6vh var(--danger); }
-  }
+  body[data-level="1"] .video-card, body[data-level="2"] .video-card { border-width: 0.5vh; }
   .video-wrap { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
   .video-box { position: relative; aspect-ratio: 4 / 3; max-width: 100%; max-height: 100%; height: 100%; }
   .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: calc(var(--radius) - 6px); }
   .video-box > svg.facelayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .facebox { fill: none; stroke: var(--level); stroke-width: 0.5; vector-effect: non-scaling-stroke; transition: all .15s linear; }
+  .facebox { fill: none; stroke: var(--level); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
   .corner { stroke: var(--level); stroke-width: 4; fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
   .video-tag {
     position: absolute; left: 1.6vh; top: 1.6vh;
     display: flex; align-items: center; gap: 0.6vw;
-    background: rgba(5, 8, 11, .7); backdrop-filter: blur(6px);
+    background: rgba(5, 8, 11, .75);
     padding: 0.7vh 1vw; border-radius: 999px; font-size: 1.5vh; color: var(--muted);
   }
-  .rec { width: 1vh; height: 1vh; border-radius: 50%; background: var(--danger); animation: blink 1.4s infinite; }
+  .rec { width: 1vh; height: 1vh; border-radius: 50%; background: var(--danger); animation: blink 1.4s steps(2, jump-none) infinite; }
   @keyframes blink { 50% { opacity: .25; } }
 
   .overlay {
     position: absolute; inset: 0; display: none;
     flex-direction: column; align-items: center; justify-content: center; gap: 2vh;
-    background: rgba(5, 8, 11, .62); backdrop-filter: blur(2px);
+    background: rgba(5, 8, 11, .72);
     text-align: center;
   }
   .overlay.show { display: flex; }
@@ -116,7 +110,7 @@
   .ring { width: 16vh; height: 16vh; }
   .ring circle { fill: none; stroke-width: 7; }
   .ring .bg { stroke: rgba(255,255,255,.1); }
-  .ring .fg { stroke: var(--accent); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset .2s linear; }
+  .ring .fg { stroke: var(--accent); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
   .ring text { fill: var(--text); font-size: 26px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
   .steps { display: flex; gap: 1vw; }
   .step { padding: 0.8vh 1.2vw; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 1.7vh; }
@@ -128,8 +122,7 @@
     display: none; align-items: center; gap: 1vw;
     background: var(--danger); color: #fff; font-weight: 800; font-size: 2.8vh;
     padding: 1.4vh 2.4vw; border-radius: 999px;
-    box-shadow: 0 1vh 4vh rgba(255,77,79,.45);
-    animation: blink 1s infinite;
+    animation: blink 1s steps(2, jump-none) infinite;
   }
   .hands-banner.show { display: flex; }
 
@@ -140,7 +133,6 @@
     display: grid; grid-template-columns: auto 1fr; gap: 1.6vw; align-items: center;
     background: linear-gradient(135deg, rgba(var(--level-rgb), .2), var(--panel) 70%);
     border-color: rgba(var(--level-rgb), .45);
-    transition: background .3s, border-color .3s;
   }
   .status-icon {
     width: 10vh; height: 10vh; border-radius: 50%;
@@ -161,7 +153,7 @@
   .metric-value small { font-size: 0.45em; color: var(--muted); font-weight: 600; margin-left: 0.2em; }
 
   .bar { position: relative; height: 2.2vh; border-radius: 999px; background: var(--panel-2); overflow: visible; }
-  .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--ok); width: 0; transition: width .2s linear, background .2s; }
+  .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--ok); width: 0; }
   .mark { position: absolute; top: -0.6vh; bottom: -0.6vh; width: 2px; }
   .mark span { position: absolute; top: 100%; transform: translateX(-50%); margin-top: 0.5vh; font-size: 1.35vh; color: var(--muted); white-space: nowrap; }
   .mark.w { background: var(--warn); } .mark.d { background: var(--danger); }
@@ -170,7 +162,7 @@
   .eye-box { display: flex; align-items: center; gap: 0.6vw; margin-left: auto; margin-right: 1.4vw; }
   .eye { width: 6vh; height: 3vh; }
   .eye path { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; }
-  .eye .iris { fill: var(--accent); stroke: none; transition: opacity .1s; }
+  .eye .iris { fill: var(--accent); stroke: none; }
   .eye-state { font-size: 1.9vh; font-weight: 700; white-space: nowrap; }
 
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4vh; min-height: 0; }
@@ -178,7 +170,7 @@
   .radar { height: 100%; max-height: 14vh; min-height: 8vh; aspect-ratio: 1; flex: none; }
   .radar .grid { stroke: var(--line); fill: none; }
   .radar .zone { fill: rgba(47,210,122,.08); stroke: rgba(47,210,122,.35); }
-  .radar .pt { fill: var(--accent); transition: cx .15s linear, cy .15s linear; }
+  .radar .pt { fill: var(--accent); }
   .radar .pt.out { fill: var(--warn); }
   .kv { font-size: 1.5vh; color: var(--muted); line-height: 1.8; font-variant-numeric: tabular-nums; }
   .kv b { color: var(--text); font-weight: 700; }
@@ -207,9 +199,9 @@
   .lost .big { font-size: 4vh; font-weight: 800; }
   .lost .small { color: var(--muted); font-size: 2vh; margin-top: 1vh; }
 
-  .edge { position: fixed; inset: 0; pointer-events: none; z-index: 5; opacity: 0; transition: opacity .3s; }
-  body[data-level="2"] .edge { opacity: 1; box-shadow: inset 0 0 14vh 2vh rgba(255,77,79,.55); animation: edge 0.8s ease-in-out infinite; }
-  @keyframes edge { 50% { box-shadow: inset 0 0 6vh 0 rgba(255,77,79,.25); } }
+  /* 위험: 화면 테두리 빨간 깜빡임 (그림자·블러 대신 테두리만 — 젯슨 나노에서 가볍게) */
+  .edge { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; border: 1.2vh solid var(--danger); }
+  body[data-level="2"] .edge { display: block; animation: blink 0.8s steps(2, jump-none) infinite; }
 
   @media (max-aspect-ratio: 4/3) {
     main, footer { grid-template-columns: 1fr; }
@@ -369,6 +361,15 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+  // 같은 값을 다시 넣으면 브라우저가 화면을 다시 그리므로, 바뀐 것만 반영 (젯슨 나노 부담 줄이기)
+  var cache = {};
+  function setv(id, key, val, fn) { var k = id + "|" + key; if (cache[k] !== val) { cache[k] = val; fn($(id), val); } }
+  function txt(id, v) { setv(id, "t", v, function (e, x) { e.textContent = x; }); }
+  function html(id, v) { setv(id, "h", v, function (e, x) { e.innerHTML = x; }); }
+  function css(id, prop, v) { setv(id, "s" + prop, v, function (e, x) { e.style[prop] = x; }); }
+  function attr(id, name, v) { setv(id, "a" + name, String(v), function (e, x) { e.setAttribute(name, x); }); }
+  function cls(id, v) { setv(id, "c", v, function (e, x) { e.className = x; }); }
+  function tog(id, name, on) { setv(id, "g" + name, !!on, function (e, x) { e.classList.toggle(name, x); }); }
   var ICONS = {
     0: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     1: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6"/><path d="M12 17h.01"/></svg>',
@@ -411,51 +412,52 @@
 
     // 상태 카드
     var iconKey = s.calibrated && !searching ? level : "wait";
-    if (iconKey !== lastIcon) { $("statusIcon").innerHTML = ICONS[iconKey]; lastIcon = iconKey; }
+    if (iconKey !== lastIcon) { html("statusIcon", ICONS[iconKey]); lastIcon = iconKey; }
     if (!s.calibrated) {
-      $("statusText").textContent = "준비 중";
-      $("statusCause").textContent = "운전자 기준 측정 중";
+      txt("statusText", "준비 중");
+      txt("statusCause", "운전자 기준 측정 중");
     } else if (searching) {
-      $("statusText").textContent = "확인 중";
-      $("statusCause").textContent = "운전자 얼굴을 찾고 있어요";
+      txt("statusText", "확인 중");
+      txt("statusCause", "운전자 얼굴을 찾고 있어요");
     } else {
-      $("statusText").textContent = LEVEL_TEXT[level];
+      txt("statusText", LEVEL_TEXT[level]);
       var causes = (s.causes || []).map(function (c) { return CAUSE_TEXT[c] ? CAUSE_TEXT[c](s) : c; });
-      $("statusCause").textContent = level === 0 ? (s.face ? "안전하게 운전 중이에요" : "얼굴을 찾는 중") : (causes.join(" · ") || " ");
+      txt("statusCause", level === 0 ? (s.face ? "안전하게 운전 중이에요" : "얼굴을 찾는 중") : (causes.join(" · ") || " "));
     }
 
     // 시스템 칩
     var bt = $("btDot");
     bt.className = "dot " + (s.sim ? "sim" : (s.bt ? "on" : "off"));
-    $("btText").textContent = s.sim ? "시뮬레이션 모드" : (s.bt ? "경고 장치 연결됨" : "경고 장치 연결 끊김");
-    $("camFps").textContent = Math.round(s.cam_fps || s.fps || 0);
-    $("procMs").textContent = Math.round(s.proc_ms || 0);
+    txt("btText", s.sim ? "시뮬레이션 모드" : (s.bt ? "경고 장치 연결됨" : "경고 장치 연결 끊김"));
+    txt("camFps", Math.round(s.cam_fps || s.fps || 0));
+    txt("procMs", Math.round(s.proc_ms || 0));
 
     // 캘리브레이션 안내
     var calib = !s.calibrated && s.face;
-    $("calibOverlay").classList.toggle("show", calib);
+    tog("calibOverlay", "show", calib);
     if (calib) {
       var closedPhase = s.calib_phase === "closed";
       var dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
-      $("stepOpen").className = "step " + (closedPhase ? "done" : "active");
-      $("stepClosed").className = "step " + (closedPhase ? "active" : "");
-      $("calibBig").textContent = closedPhase ? "눈을 편하게 감아 주세요" : "정면을 보고 눈을 떠 주세요";
-      $("calibSmall").textContent = closedPhase ? "감은 눈의 기준을 측정합니다" : "운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다";
-      $("ringFg").style.stroke = closedPhase ? "var(--warn)" : "var(--accent)";
-      $("ringFg").style.strokeDashoffset = (326.7 * (1 - s.calib_rem / Math.max(dur, 0.01))).toFixed(1);
-      $("ringText").textContent = Math.ceil(s.calib_rem);
+      cls("stepOpen", "step " + (closedPhase ? "done" : "active"));
+      cls("stepClosed", "step " + (closedPhase ? "active" : ""));
+      txt("calibBig", closedPhase ? "눈을 편하게 감아 주세요" : "정면을 보고 눈을 떠 주세요");
+      txt("calibSmall", closedPhase ? "감은 눈의 기준을 측정합니다" : "운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다");
+      css("ringFg", "stroke", closedPhase ? "var(--warn)" : "var(--accent)");
+      css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(dur, 0.01))).toFixed(1));
+      txt("ringText", Math.ceil(s.calib_rem));
     }
-    $("faceOverlay").classList.toggle("show", !s.face);
+    tog("faceOverlay", "show", !s.face);
     if (!s.face) {
-      $("faceSmall").textContent = s.calibrated && s.missing_sec > 0
+      txt("faceSmall", s.calibrated && s.missing_sec > 0
         ? "얼굴이 " + s.missing_sec.toFixed(0) + "초째 보이지 않아요 (" + s.face_missing_sec.toFixed(0) + "초면 위험)"
-        : "카메라 정면에 앉아 주세요";
+        : "카메라 정면에 앉아 주세요");
     }
 
     // 얼굴 상자
     var fg = $("faceG");
     if (s.face_box && s.calibrated) {
-      var b = s.face_box, x = b[0] * 100, y = b[1] * 100, w = (b[2] - b[0]) * 100, h = (b[3] - b[1]) * 100;
+      var b = s.face_box, q = function (v) { return Math.round(v * 1000) / 10; };
+      var x = q(b[0]), y = q(b[1]), w = q(b[2] - b[0]), h = q(b[3] - b[1]);
       var r = $("faceRect");
       r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", h);
       var cw = w * 0.18, ch = h * 0.18;
@@ -464,25 +466,25 @@
         "M" + (x + w - cw) + " " + y + "H" + (x + w) + "V" + (y + ch) +
         "M" + (x + w) + " " + (y + h - ch) + "V" + (y + h) + "H" + (x + w - cw) +
         "M" + (x + cw) + " " + (y + h) + "H" + x + "V" + (y + h - ch));
-      fg.style.display = "";
+      css("faceG", "display", "");
     } else {
-      fg.style.display = "none";
+      css("faceG", "display", "none");
     }
 
     // 눈 감김 시간
     var maxClosed = s.eye_lv2_sec * 1.5;
     setMark($("mClosed1"), s.eye_lv1_sec / maxClosed);
     setMark($("mClosed2"), s.eye_lv2_sec / maxClosed);
-    $("closedVal").innerHTML = s.closed_dur.toFixed(1) + "<small>초</small>";
+    html("closedVal", s.closed_dur.toFixed(1) + "<small>초</small>");
     var cb = $("closedBar");
     cb.style.width = pct(s.closed_dur / maxClosed);
     cb.style.background = s.closed_dur >= s.eye_lv2_sec ? "var(--danger)" : s.closed_dur >= s.eye_lv1_sec ? "var(--warn)" : "var(--accent)";
     var closed = s.face && s.closed;
-    $("eyeIris").style.opacity = closed ? 0 : 1;
-    document.querySelector(".eye").style.opacity = s.face ? 1 : 0.3;
-    $("eyeTop").setAttribute("d", closed ? "M4 17 Q35 25 66 17" : "M4 17 Q35 -3 66 17");
-    $("eyeState").textContent = !s.face ? "–" : (closed ? "눈 감음" : "눈 뜸");
-    $("eyeState").style.color = closed ? "var(--warn)" : "var(--text)";
+    css("eyeIris", "opacity", closed ? 0 : 1);
+    setv("eyeBox", "o", s.face, function () { document.querySelector(".eye").style.opacity = s.face ? 1 : 0.3; });
+    attr("eyeTop", "d", closed ? "M4 17 Q35 25 66 17" : "M4 17 Q35 -3 66 17");
+    txt("eyeState", !s.face ? "–" : (closed ? "눈 감음" : "눈 뜸"));
+    css("eyeState", "color", closed ? "var(--warn)" : "var(--text)");
 
     // PERCLOS
     var maxP = Math.max(s.perclos_lv2 * 1.5, 0.3);
@@ -490,8 +492,8 @@
     setMark($("mPerc2"), s.perclos_lv2 / maxP);
     $("mPerc1").firstChild.textContent = Math.round(s.perclos_lv1 * 100) + "% 주의";
     $("mPerc2").firstChild.textContent = Math.round(s.perclos_lv2 * 100) + "% 위험";
-    $("percDesc").textContent = "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율";
-    $("percVal").innerHTML = Math.round(s.perclos * 100) + "<small>%</small>";
+    txt("percDesc", "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율");
+    html("percVal", Math.round(s.perclos * 100) + "<small>%</small>");
     var pb = $("percBar");
     pb.style.width = pct(s.perclos / maxP);
     pb.style.background = s.perclos >= s.perclos_lv2 ? "var(--danger)" : s.perclos >= s.perclos_lv1 ? "var(--warn)" : "var(--accent)";
@@ -502,13 +504,13 @@
       var px = Math.max(-46, Math.min(46, s.yaw / 60 * 46));
       var py = Math.max(-46, Math.min(46, -s.pitch / 60 * 46));
       pt.setAttribute("cx", px.toFixed(1)); pt.setAttribute("cy", py.toFixed(1));
-      pt.style.display = "";
-      pt.setAttribute("class", "pt" + (s.off_road ? " out" : ""));
-      $("headKv").innerHTML = "좌우 <b>" + (s.yaw > 0 ? "+" : "") + Math.round(s.yaw) + "°</b><br>상하 <b>" + (s.pitch > 0 ? "+" : "") + Math.round(s.pitch) + "°</b><br>" +
-        (s.off_road ? "<b style='color:var(--warn)'>전방 이탈 " + s.off_dur.toFixed(1) + "초</b>" : "<b style='color:var(--ok)'>전방 주시 중</b>");
+      css("headPt", "display", "");
+      attr("headPt", "class", "pt" + (s.off_road ? " out" : ""));
+      html("headKv", "좌우 <b>" + (s.yaw > 0 ? "+" : "") + Math.round(s.yaw) + "°</b><br>상하 <b>" + (s.pitch > 0 ? "+" : "") + Math.round(s.pitch) + "°</b><br>" +
+        (s.off_road ? "<b style='color:var(--warn)'>전방 이탈 " + s.off_dur.toFixed(1) + "초</b>" : "<b style='color:var(--ok)'>전방 주시 중</b>"));
     } else {
-      pt.style.display = "none";
-      $("headKv").innerHTML = "좌우 <b>–</b><br>상하 <b>–</b>";
+      css("headPt", "display", "none");
+      html("headKv", "좌우 <b>–</b><br>상하 <b>–</b>");
     }
 
     // 핸들
@@ -516,7 +518,7 @@
     if (s.sim || !s.bt) { hs.textContent = "센서 미연결"; hs.style.color = "var(--muted)"; }
     else if (s.hands_off) { hs.textContent = "손을 뗌"; hs.style.color = "var(--danger)"; }
     else { hs.textContent = "잡고 있음"; hs.style.color = "var(--ok)"; }
-    $("handsBanner").classList.toggle("show", !!s.hands_off);
+    tog("handsBanner", "show", !!s.hands_off);
   }
 
   function addEvents(events) {
