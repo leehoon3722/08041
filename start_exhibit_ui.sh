@@ -17,6 +17,7 @@ UI_TOUCH="${UI_TOUCH:-1}"   # 1: 터치스크린에도 UI 띄움 / 0: 두 번째
 UI_RES="1280x720"           # 두 번째 모니터 해상도 (작을수록 가벼움). 원래대로: ""
 UI_GPU=1                    # 1: 브라우저 GPU 사용 / 0: GPU 끔 — 둘 다 해 보고 빠른 쪽
 UI_NICE=10                  # 브라우저 우선순위 낮춤 → 졸음 판정 프로그램이 CPU를 먼저 씀 (0~19)
+TOUCH_DEVICE=""             # 터치스크린 입력 장치 이름 (xinput list 로 확인). 빈칸이면 이름으로 자동 찾기
 
 # 예전 실행에서 남은 UI 창(연결 실패 화면 등)이 있으면 닫고 새로 띄움
 if pgrep -f "user-data-dir=$PROFILE" >/dev/null; then
@@ -70,6 +71,29 @@ if [ -n "$OUT" ] && [ "$OUT" != "$MAIN" ]; then
     fi
   fi
 fi
+
+# ── 터치 입력을 터치스크린에만 연결 ──
+# 모니터를 옆으로 펼치면 터치 좌표가 두 화면 전체(예: 1024+1280 폭)로 늘어나서,
+# 터치스크린 오른쪽을 누르면 두 번째 모니터 쪽이 눌림 → 재측정 버튼이 안 먹는 원인
+map_touch() {
+  command -v xinput >/dev/null || { echo "⚠️  [터치] xinput 없음 — sudo apt install xinput"; return; }
+  local ids
+  if [ -n "$TOUCH_DEVICE" ]; then
+    ids=$(xinput list | grep -F "$TOUCH_DEVICE" | grep -o 'id=[0-9]*' | cut -d= -f2)
+  else
+    ids=$(xinput list | grep -iE 'touch|ilitek|waveshare|egalax|goodix|ft5|qdtech|wch|usb2iic|hid 222a|multitouch' \
+          | grep -iv 'keyboard' | grep -o 'id=[0-9]*' | cut -d= -f2)
+  fi
+  if [ -z "$ids" ]; then
+    echo "⚠️  [터치] 터치스크린 장치를 못 찾음 — 'xinput list' 결과에서 이름을 찾아 TOUCH_DEVICE에 넣어 주세요"
+    return
+  fi
+  for id in $ids; do
+    xinput map-to-output "$id" "$MAIN" 2>/dev/null \
+      && echo "[터치] $(xinput list --name-only "$id" 2>/dev/null) (id=$id) → $MAIN 에만 연결"
+  done
+}
+[ -n "$OUT" ] && [ "$OUT" != "$MAIN" ] && map_touch
 
 BROWSER=$(command -v chromium-browser || command -v chromium || command -v google-chrome)
 if [ -z "$BROWSER" ]; then

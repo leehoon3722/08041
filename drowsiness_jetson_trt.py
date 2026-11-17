@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -92,7 +92,7 @@ CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨�
 CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
-FORCE_SIM_MODE        = True  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
+FORCE_SIM_MODE        = False  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
 ESP32_MAC_ADDR        = "08:3A:F2:B9:8C:6A"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
@@ -1874,6 +1874,7 @@ class WebUI:
             # 키보드 포커스가 전체 화면 UI 창에 있어도 r/q/b가 먹도록 (페이지가 눌린 키를 보내 줌)
             k = (request.args.get("k") or "")[:1].lower()
             if k in ("r", "q", "b", "s") and self.key_q is not None:
+                print(f"🖐️  [웹 UI] 화면에서 '{k.upper()}' 입력" + (" (재측정 버튼)" if k == "r" else ""))
                 self.key_q.put(k)
                 return jsonify(ok=True)
             return jsonify(ok=False), 400
@@ -2553,4 +2554,21 @@ if __name__ == "__main__":
     _init_bluetooth()
     threading.Thread(target=bluetooth_thread, daemon=True).start()
     threading.Thread(target=bt_reader_thread, daemon=True).start()
-    main()
+    code = 0
+    try:
+        main()
+    except BaseException:
+        import traceback
+        traceback.print_exc()
+        code = 1
+    finally:
+        # 여기서 바로 프로세스를 끝냄. 파이썬이 평소처럼 정리하면 TensorRT·카메라 등 C++ 쪽 스레드가
+        # 남은 채로 정리되다가 'terminate called without an active exception'으로 죽고,
+        # 터미널이 이상한 상태(방향키가 ^[[A로 찍힘)로 남는 경우가 있음
+        if _term_keys is not None:
+            _term_keys.restore()
+        try:
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(code)
