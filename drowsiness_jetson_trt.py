@@ -26,7 +26,7 @@
   · 연속 눈 감김 1초 이상 → LV1, 2초 이상 → LV2 (Euro NCAP 마이크로슬립 1~2초), 눈 뜨면 0.5초 뒤 해제
   · PERCLOS: 최근 30초 중 눈 감긴 시간 비율 15% 이상 → LV1, 30% 이상 → LV2 (누적 졸음 경향, 경고음은 2.5초만)
   · 얼굴이 5초 이상 안 보이면 LV2
-  캘리브레이션 2단계: 정면 보고 눈 뜨기 3초 → 화면에 CLOSE EYES가 뜨면 눈 감기 2초
+  캘리브레이션: 정면을 보고 5초 동안 천천히 5번 깜빡이기 (CALIB_MODE="open_close"면 예전 3초 뜨기 → 2초 감기)
   → 뜬 눈·감은 눈 EAR의 중간을 감김 기준으로 (이 랜드마크 모델은 감아도 EAR이 0까지 안 내려감)
 
 [머리 자세 → 전방 주시 태만]
@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -129,6 +129,13 @@ PERCLOS_SOUND_SEC  = 2.5    # PERCLOS 경보는 경고음을 이 시간만 울�
                             # 연속 눈 감김·전방 주시 태만·얼굴 없음 경보는 지금처럼 계속 울림
 
 # 캘리브레이션 — 2단계 (정면 보고 눈 뜨기 → 눈 감기)
+CALIB_MODE          = "blink"  # "blink": 5초 동안 천천히 5번 깜빡이기 (뜬 눈·감은 눈을 한 번에 측정)
+                               # "open_close": 예전 방식 — 3초 눈 뜨기 → 2초 눈 감기
+CALIB_BLINK_SEC     = 5.0   # 깜빡임 측정 시간
+CALIB_BLINK_TARGET  = 5     # 안내할 깜빡임 횟수
+CALIB_BLINK_MIN     = 3     # 이 횟수 이상 잡혀야 성공
+CALIB_BLINK_DROP    = 0.15  # 뜬 눈보다 15% 이상 내려가면 '깜빡임 시작'으로 셈
+CALIB_BLINK_RETRY   = 1     # 깜빡임이 부족하면 다시 시도할 횟수 (그래도 안 되면 기본 비율)
 CALIB_OPEN_SEC      = 3.0   # 뜬 눈 EAR 측정
 CALIB_CLOSED_SEC    = 2.0   # 감은 눈 EAR 측정 (0이면 생략 → CLOSE_RATIO_DEFAULT 사용)
 CALIB_SKIP_SEC      = 0.5   # 각 단계 시작 직후(안내 보고 반응하는 시간)는 버림
@@ -136,6 +143,8 @@ CALIB_IQR_FACTOR    = 1.5   # ② IQR × 이 값 이내만 유효 샘플로 인�
 CLOSE_POINT         = 0.5   # 감김 기준 = 감은 눈 + 0.5 × (뜬 눈 − 감은 눈)  → 두 값의 중간
 CLOSE_HYST          = 0.10  # 다시 뜸 기준 = 감김 기준 + 0.1 × (뜬 눈 − 감은 눈)  → 경계 깜빡임 방지
 CLOSE_RATIO_DEFAULT = 0.75  # 감은 눈을 못 쟀을 때: 감김 기준 = 뜬 눈 × 0.75
+CLOSE_RATIO_MAX     = 0.85  # 감김 기준 상한 = 뜬 눈 × 0.85 (빠른 깜빡임으로 감은 눈이 덜 내려가게 재져도
+                            # 기준이 뜬 눈에 너무 붙어 오경보 나지 않게)
 
 # 적응형 재보정
 RECALIB_INTERVAL   = 120.0
@@ -1185,6 +1194,13 @@ class DrowsinessJudge:
 # ══════════════════════════════════════════
 # 6-1. 적응형 임계값 — 2단계 캘리브레이션 (뜬 눈 → 감은 눈) + 주기적 재보정
 # ══════════════════════════════════════════
+def _calib_guide() -> str:
+    if CALIB_MODE == "blink":
+        return f"캘리브레이션: 정면을 보고 {CALIB_BLINK_SEC:.0f}초 동안 천천히 {CALIB_BLINK_TARGET}번 깜빡이기"
+    return (f"캘리브레이션: 정면 보고 눈 뜨기 {CALIB_OPEN_SEC:.0f}초"
+            + (f" → 화면에 CLOSE EYES가 뜨면 눈 감기 {CALIB_CLOSED_SEC:.0f}초" if CALIB_CLOSED_SEC > 0 else ""))
+
+
 class AdaptiveThreshold:
     """
     운전자별 '눈 감김' 기준 EAR.
@@ -1205,8 +1221,12 @@ class AdaptiveThreshold:
 
     def reset(self, verbose: bool = True):
         """새 탑승자를 위한 캘리브레이션 초기화 (R 키)."""
-        self.phase         = "open"     # "open" → "closed" → "done"
+        self.phase         = "blink" if CALIB_MODE == "blink" else "open"   # → "done"
         self._phase_start  = None
+        self._blink_buf    = []         # 깜빡임 단계: (시각, 원본 EAR)
+        self._blink_retry  = CALIB_BLINK_RETRY
+        self.blink_count   = 0          # 지금까지 잡힌 깜빡임 (화면 표시용)
+        self.calib_msg     = ""         # 화면에 띄울 안내 (재시도 등)
         self.open_buf      = []
         self.closed_buf    = []
         self.baseline      = None       # 뜬 눈 EAR
@@ -1239,7 +1259,7 @@ class AdaptiveThreshold:
         b = self.baseline
         if self.closed_level is not None:
             gap = b - self.closed_level
-            self.threshold = self.closed_level + CLOSE_POINT * gap
+            self.threshold = min(self.closed_level + CLOSE_POINT * gap, b * CLOSE_RATIO_MAX)
         else:
             gap = b * (1.0 - CLOSE_RATIO_DEFAULT) / (1.0 - CLOSE_POINT)   # 기본 비율에 해당하는 차이
             self.threshold = b * CLOSE_RATIO_DEFAULT
@@ -1258,7 +1278,71 @@ class AdaptiveThreshold:
         skip = min(CALIB_SKIP_SEC, 0.3 * dur)
         return skip, max(3, int(0.3 * (dur - skip) * FPS_TARGET))
 
-    def update(self, ear: float, perclos: float = 0.0, on_road: bool = True) -> bool:
+    @staticmethod
+    def _find_blinks(vals, open_ref):
+        """원본 EAR 목록에서 깜빡임 찾기 → 깜빡임마다 최저 EAR 목록.
+        뜬 눈보다 CALIB_BLINK_DROP 이상 내려가면 시작, 그 절반만큼 다시 올라오면 끝 (경계에서 여러 번 세지 않게)."""
+        lo = open_ref * (1.0 - CALIB_BLINK_DROP)
+        hi = open_ref * (1.0 - CALIB_BLINK_DROP / 2)
+        mins, cur = [], None
+        for v in vals:
+            if cur is None:
+                if v < lo:
+                    cur = v
+            elif v > hi:
+                mins.append(cur)
+                cur = None
+            else:
+                cur = min(cur, v)
+        return mins
+
+    def _update_blink(self, raw: float, now: float, el: float) -> bool:
+        """깜빡임 캘리브레이션 (CALIB_MODE="blink")."""
+        skip = min(CALIB_SKIP_SEC, 0.2 * CALIB_BLINK_SEC)
+        if el < CALIB_BLINK_SEC:
+            if raw > 0 and el >= skip:
+                self._blink_buf.append(raw)
+                if len(self._blink_buf) >= 10:            # 화면용 실시간 횟수
+                    ref = float(np.percentile(self._blink_buf, 75))
+                    self.blink_count = len(self._find_blinks(self._blink_buf, ref))
+            return False
+
+        vals = self._blink_buf
+        min_n = max(10, int(0.4 * (CALIB_BLINK_SEC - skip) * FPS_TARGET))
+        if len(vals) < min_n:                                   # 얼굴이 거의 안 보였음
+            print("⚠️  [캘리브레이션] 얼굴이 잘 안 보여 다시 시작합니다 — 정면을 봐 주세요")
+            self.calib_msg = "얼굴이 잘 안 보여요 — 정면을 보고 다시 깜빡여 주세요"
+            self._blink_buf, self.blink_count, self._phase_start = [], 0, now
+            return False
+
+        arr = np.array(vals)
+        med = float(np.median(arr))
+        open_ear = float(np.median(arr[arr >= med]))            # 위쪽 절반의 중앙값 = 뜬 눈
+        mins = self._find_blinks(vals, open_ear)
+        closed = float(np.mean(mins)) if mins else None
+        ok = (len(mins) >= CALIB_BLINK_MIN and closed is not None
+              and open_ear - closed >= 0.15 * open_ear)
+        print(f"[캘리브레이션] 깜빡임 {len(mins)}회 감지, 뜬 눈 EAR={open_ear:.3f}"
+              + (f", 깜빡임 최저 평균={closed:.3f}" if closed is not None else ""))
+        if not ok and self._blink_retry > 0:
+            self._blink_retry -= 1
+            why = (f"깜빡임이 {len(mins)}번만 잡혔어요" if len(mins) < CALIB_BLINK_MIN
+                   else "눈을 덜 감았어요")
+            print(f"⚠️  [캘리브레이션] {why} → 한 번 더 (천천히, 꾹 감았다 뜨기)")
+            self.calib_msg = f"{why} — 천천히, 꾹 감았다 떠 주세요"
+            self._blink_buf, self.blink_count, self._phase_start = [], 0, now
+            return False
+        self.baseline = open_ear
+        if ok:
+            self.closed_level = closed
+        else:
+            print("⚠️  [캘리브레이션] 깜빡임 측정 실패 → 기본 비율 사용 (R/재측정 버튼으로 다시 가능)")
+        self.blink_count = len(mins)
+        self.calib_msg = ""
+        self._finish(now)
+        return True
+
+    def update(self, ear: float, perclos: float = 0.0, on_road: bool = True, raw: float = None) -> bool:
         now = time.time()
 
         # ── 캘리브레이션 ──
@@ -1266,6 +1350,9 @@ class AdaptiveThreshold:
             if self._phase_start is None:
                 self._phase_start = now
             el = now - self._phase_start
+            if self.phase == "blink":
+                # 깜빡임은 0.1~0.3초라 평활화(EMA)된 값은 바닥까지 안 내려감 → 원본 EAR 사용
+                return self._update_blink(ear if raw is None else raw, now, el)
             if self.phase == "open":
                 skip, min_n = self._phase_rules(CALIB_OPEN_SEC)
                 if el < CALIB_OPEN_SEC:
@@ -1325,7 +1412,8 @@ class AdaptiveThreshold:
 
     def calib_remaining(self) -> float:
         """현재 캘리브레이션 단계의 남은 시간 (초)."""
-        dur = CALIB_CLOSED_SEC if self.phase == "closed" else CALIB_OPEN_SEC
+        dur = (CALIB_BLINK_SEC if self.phase == "blink"
+               else CALIB_CLOSED_SEC if self.phase == "closed" else CALIB_OPEN_SEC)
         if self._phase_start is None:
             return dur
         return max(0.0, dur - (time.time() - self._phase_start))
@@ -2091,7 +2179,9 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
 
     if not is_calibrated:
         # 2단계 캘리브레이션 안내: 정면 보고 눈 뜨기 → 눈 감기
-        if calib_phase == "closed":
+        if calib_phase == "blink":
+            msg, col = f"BLINK SLOWLY {calib_rem:.1f}s", (0, 220, 220)
+        elif calib_phase == "closed":
             msg, col = f"CLOSE EYES {calib_rem:.1f}s", (0, 160, 255)
         else:
             msg, col = f"LOOK AHEAD {calib_rem:.1f}s", (0, 220, 220)
@@ -2190,8 +2280,7 @@ def main():
     adaptive_thr = AdaptiveThreshold(
         RECALIB_INTERVAL, RECALIB_WINDOW_SEC, FPS_TARGET, RECALIB_MAX_DRIFT,
     )
-    print(f"캘리브레이션: 정면 보고 눈 뜨기 {CALIB_OPEN_SEC:.0f}초"
-          + (f" → 화면에 CLOSE EYES가 뜨면 눈 감기 {CALIB_CLOSED_SEC:.0f}초" if CALIB_CLOSED_SEC > 0 else ""))
+    print(_calib_guide())
     head_est = HeadPoseEstimator(vs.width, vs.height) if HEAD_POSE_ENABLE else None
     distract = DistractionMonitor()
     sound    = AlarmSound().start()                              # 디스플레이 스피커 경고음
@@ -2328,7 +2417,8 @@ def main():
 
                     ema_ear = ema.update(raw_ear)
                     # 고개를 돌린 동안의 EAR은 장기 재보정 버퍼에 넣지 않음
-                    is_cal  = adaptive_thr.update(ema_ear, judge.perclos, on_road=not distract.off_road)
+                    is_cal  = adaptive_thr.update(ema_ear, judge.perclos, on_road=not distract.off_road,
+                                                  raw=raw_ear)
 
                     if is_cal and adaptive_thr.threshold:
                         # 졸음 판정 (시간 기준): 연속 눈 감김 1초 LV1 / 2초 LV2 + 최근 30초 PERCLOS
@@ -2436,6 +2526,8 @@ def main():
                     calibrated=calibrated, calib_phase=adaptive_thr.phase,
                     calib_rem=round(adaptive_thr.calib_remaining(), 2),
                     calib_open_sec=CALIB_OPEN_SEC, calib_closed_sec=CALIB_CLOSED_SEC,
+                    calib_blink_sec=CALIB_BLINK_SEC, blink_count=adaptive_thr.blink_count,
+                    blink_target=CALIB_BLINK_TARGET, calib_msg=adaptive_thr.calib_msg,
                     face=bool(bboxes), face_box=face_box, missing_sec=round(missing_sec, 1),
                     face_missing_sec=FACE_MISSING_DANGER_SEC,
                     ear=round(float(ema_ear or 0.0), 4),
@@ -2525,8 +2617,7 @@ def main():
                 with bt_lock:
                     target_state = "OFF"
                 sound.set_level(0)
-                print(f"🔄 [R키] 새 탑승자 캘리브레이션 시작 — 정면 보고 눈 뜨기 {CALIB_OPEN_SEC:.0f}초"
-                      + (f" → CLOSE EYES가 뜨면 {CALIB_CLOSED_SEC:.0f}초 감기" if CALIB_CLOSED_SEC > 0 else ""))
+                print(f"🔄 [R키] 새 탑승자 — {_calib_guide()}")
 
     finally:
         is_running = False
