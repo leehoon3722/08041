@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -98,7 +98,8 @@ BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
 BT_HEARTBEAT_INTERVAL = 1.0    # 하트비트 주기 (초)
 BT_ACK_RETRY          = 10     # ACK 재시도 횟수
-BT_RECONNECT_INTERVAL = 5.0    # 재연결 시도 간격 (초)
+BT_RECONNECT_INTERVAL = 5.0    # 재연결 시도 간격 (초) — 계속 실패하면 점점 늘림
+BT_RECONNECT_MAX      = 15.0   # 재연결 간격 최대 (초)
 BT_ABNORMAL_THRESHOLD = 3      # ESP32 비정상 응답 N회 → 프로세스 재시작
 BT_ABNORMAL_RESET_SEC = 30.0   # 이 시간 동안 정상 응답이면 카운트 리셋
 BT_ACK_TIMEOUT        = 1.0    # 명령 1회당 ACK('A') 기다리는 시간 (초)
@@ -172,7 +173,9 @@ WEB_STREAM_FPS      = 10             # 웹으로 보내는 영상 fps (판정은
 WEB_STREAM_WIDTH    = 480            # 웹 영상 가로 크기 (작을수록 압축·브라우저 부담 감소, 예: 400)
 WEB_JPEG_QUALITY    = 70
 WEB_UI_AUTO_OPEN    = True           # 프로그램 실행 시 두 번째 모니터에 UI 자동으로 띄움 (start_exhibit_ui.sh 사용)
-WEB_UI_MONITOR      = ""             # 띄울 모니터 이름 (xrandr 이름, 예: "DP-0"). 빈칸이면 자동 선택
+WEB_UI_MONITOR      = ""             # 두 번째 모니터 이름 (xrandr 이름, 예: "DP-0"). 빈칸이면 자동 선택
+UI_ON_TOUCHSCREEN   = True           # True: 터치스크린에도 웹 UI(재측정 버튼 포함)를 띄우고 OpenCV 창은 숨김
+                                     # False: 터치스크린엔 예전처럼 OpenCV 창, 웹 UI는 두 번째 모니터에만
 BUZ_SOUND_FILE      = None           # ESP32 !BUZ# 알림음. None이면 '띵-동-띵-동' 자동 생성,
                                      # 녹음한 음성 등을 쓰려면 wav 경로 (예: "./sounds/handsoff_voice.wav")
 
@@ -438,8 +441,8 @@ def _sim_log(state: str, perclos: float):
     _sim_log_buf.append(entry)
     print(f"📋 [SIM] {entry}")
 
-def _create_socket():
-    """소켓 생성 + 연결 시도. 실패 시 None 반환."""
+def _create_socket(quiet: bool = False):
+    """소켓 생성 + 연결 시도. 실패 시 None 반환 (quiet면 실패 메시지 생략)."""
     try:
         s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
         s.settimeout(BT_TIMEOUT)
@@ -447,7 +450,10 @@ def _create_socket():
         print(f"✅ 블루투스 연결 성공: {ESP32_MAC_ADDR}")
         return s
     except Exception as e:
-        print(f"⚠️  블루투스 연결 실패: {e}")
+        try: s.close()
+        except Exception: pass
+        if not quiet:
+            print(f"⚠️  블루투스 연결 실패: {e}")
         return None
 
 def _init_bluetooth():
@@ -550,10 +556,11 @@ def _on_buz(body: str):
         if not BUZ_PLAY_ON_LV:
             return
     else:
-        if _web_ui is not None and now - buz_last_time > BUZ_BANNER_SEC:
-            _web_ui.event("hands", "핸들에서 손을 뗌")
+        if now - buz_last_time > BUZ_BANNER_SEC:      # 손을 뗀 순간에만 출력 (ESP32는 3초마다 반복 전송)
+            print("🔔 [ESP32] !BUZ# 수신 (핸들 이탈) → 디스플레이 스피커 알림음 (손 떼고 있는 동안 3초마다 반복)")
+            if _web_ui is not None:
+                _web_ui.event("hands", "핸들에서 손을 뗌")
         buz_last_time = now
-        print("🔔 [ESP32] !BUZ# 수신 (핸들 이탈) → 디스플레이 스피커 알림음")
     if _alarm_sound is not None:
         _alarm_sound.play_buz()
 
@@ -626,6 +633,7 @@ def bluetooth_thread():
     last_heartbeat = time.time()
     last_reconnect = 0.0
     esp_stopped    = False      # ESP32에 STOP을 보낸 상태인지
+    fail_count     = 0          # 연속 재연결 실패 횟수 (콘솔 도배 방지·간격 늘리기)
 
     while is_running:
         # ── ① 재연결 체크 ──
@@ -633,15 +641,21 @@ def bluetooth_thread():
             is_connected = sock is not None
         if not is_connected:
             now = time.time()
-            if now - last_reconnect >= BT_RECONNECT_INTERVAL:
+            # ESP32가 꺼져 있으면 계속 실패하므로 간격을 5초 → 최대 BT_RECONNECT_MAX 초로 늘리고,
+            # 콘솔에는 처음 실패 때와 1분에 한 번 정도만 출력 (재연결 자체는 계속 → ESP32 켜면 자동 연결)
+            interval = min(BT_RECONNECT_INTERVAL * (1 + fail_count // 3), BT_RECONNECT_MAX)
+            if now - last_reconnect >= interval:
                 if FORCE_SIM_MODE:
                     last_reconnect = now   # 재연결 시도 없이 대기만
                 else:
-                    print("🔄 블루투스 재연결 시도...")
-                    new_sock = _create_socket()
+                    loud = fail_count == 0 or fail_count % 4 == 0
+                    if loud:
+                        print("🔄 블루투스 재연결 시도..." + (f" ({fail_count}회째 실패 중 — ESP32 전원·거리 확인)" if fail_count else ""))
+                    new_sock = _create_socket(quiet=not loud)
                     with sock_lock:
                         sock = new_sock
-                    last_reconnect = now
+                    last_reconnect = time.time()
+                    fail_count = 0 if sock else fail_count + 1
                     if sock:
                         _exit_sim_mode()
                         current_state = "FORCE_RESEND"
@@ -1793,7 +1807,10 @@ class WebUI:
             print(f"⚠️  [웹 UI] {sh} 없음 → 자동으로 띄우지 않음")
             return
         try:
-            subprocess.Popen(["bash", sh] + ([WEB_UI_MONITOR] if WEB_UI_MONITOR else []))
+            # 터미널과 분리해서 실행 — 브라우저가 터미널 설정을 바꿔 키 입력(Q/R/S)이 먹지 않던 문제 방지
+            env = dict(os.environ, UI_TOUCH="1" if UI_ON_TOUCHSCREEN else "0")
+            subprocess.Popen(["bash", sh] + ([WEB_UI_MONITOR] if WEB_UI_MONITOR else []),
+                             stdin=subprocess.DEVNULL, start_new_session=True, env=env)
         except OSError as e:
             print(f"⚠️  [웹 UI] 자동 실행 실패: {e}")
 
@@ -1911,7 +1928,7 @@ class TerminalKeys:
                 return
             fd = sys.stdin.fileno()
             self._old = termios.tcgetattr(fd)
-            tty.setcbreak(fd)                 # 엔터 없이 한 글자씩 (Ctrl+C는 그대로 동작)
+            self._set_mode(fd)
             atexit.register(self.restore)
             threading.Thread(target=self._loop, args=(fd,), daemon=True).start()
             print("[키 입력] 터미널에서도 R(재보정) / S(일시정지) / B(알림음 테스트) / Q(종료) 사용 가능 — 엔터 없이")
@@ -1919,14 +1936,36 @@ class TerminalKeys:
             print(f"[키 입력] 터미널 키 입력 끔: {e}")
             self._old = None
 
+    @staticmethod
+    def _set_mode(fd):
+        """엔터 없이 한 글자씩 + 글자 안 보이게 + Ctrl+C도 글자로 받음 (아래 _loop가 직접 처리)."""
+        import termios, tty
+        tty.setcbreak(fd)
+        attrs = termios.tcgetattr(fd)
+        attrs[3] &= ~termios.ISIG
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
     def _loop(self, fd):
+        import termios
         while is_running:
             try:
+                # 다른 프로그램(브라우저 등)이 터미널을 원래 모드로 되돌려 놓으면 다시 설정
+                if self._old is not None and termios.tcgetattr(fd)[3] & (termios.ICANON | termios.ISIG):
+                    self._set_mode(fd)
                 r, _, _ = select.select([fd], [], [], 0.2)
                 if r:
                     ch = os.read(fd, 1)
-                    if ch:
-                        self._q.put(ch.decode(errors="ignore").lower())
+                    if not ch:
+                        continue
+                    if ch == b"\x03":                   # Ctrl+C
+                        print("\n[키 입력] Ctrl+C — 종료합니다")
+                        self._q.put("q")
+                        _start_force_exit("Ctrl+C")
+                    else:
+                        c = ch.decode(errors="ignore").lower()
+                        self._q.put(c)
+                        if c == "q":
+                            _start_force_exit("Q 키")
             except Exception:
                 return
 
@@ -1948,6 +1987,40 @@ class TerminalKeys:
 
 
 _term_keys = None
+
+
+_force_exit_started = False
+
+def _start_force_exit(why: str, wait: float = 5.0):
+    """종료 요청 후 wait초 안에 프로그램이 안 끝나면(메인 루프가 어딘가에서 멈춘 경우) 강제 종료.
+    멈춘 위치를 콘솔에 찍어서 원인을 볼 수 있게 함."""
+    global _force_exit_started
+    if _force_exit_started:
+        return
+    _force_exit_started = True
+
+    def _killer():
+        time.sleep(wait)
+        print(f"\n⚠️  [{why}] {wait:.0f}초 안에 정상 종료되지 않아 강제 종료합니다. 멈춰 있던 위치:")
+        try:
+            import faulthandler
+            faulthandler.dump_traceback(all_threads=True)
+        except Exception:
+            pass
+        if _term_keys is not None:
+            _term_keys.restore()
+        if _alarm_sound is not None:
+            try: _alarm_sound.stop()
+            except Exception: pass
+        subprocess.run(["pkill", "-f", "user-data-dir=/tmp/exhibit-ui"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if sock: sock.close()
+        except Exception:
+            pass
+        os._exit(1)
+
+    threading.Thread(target=_killer, daemon=True).start()
 
 
 # ══════════════════════════════════════════
@@ -2141,16 +2214,21 @@ def main():
     # OpenCV 창을 터치스크린에 고정 — 웹 UI가 모니터 배치를 바꾸는 동안 창이 다른 모니터로
     # 가거나 전체 화면 UI 뒤에 숨는 것을 막기 위해, 시작 후 20초 동안 몇 번 더 제자리로 옮김
     has_display = bool(os.environ.get("DISPLAY")) or sys.platform != "linux"
+    # 터치스크린에 웹 UI를 띄우면 OpenCV 창은 필요 없음 (가려지기만 하고 그리는 데 CPU만 씀)
+    show_cv = has_display and not (UI_ON_TOUCHSCREEN and WEB_UI_AUTO_OPEN and web.enabled)
+    if has_display and not show_cv:
+        print("🖥️  OpenCV 창 숨김 — 터치스크린과 두 번째 모니터 모두 웹 UI 사용 (UI_ON_TOUCHSCREEN=True)")
     try:
-        if not has_display:
-            raise cv2.error("DISPLAY 없음")
+        if not show_cv:
+            raise cv2.error("OpenCV 창 사용 안 함")
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL if CV_FULLSCREEN else cv2.WINDOW_AUTOSIZE)
         if CV_FULLSCREEN:
             cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.moveWindow(WINDOW_NAME, *CV_WINDOW_POS)
     except cv2.error as e:
-        print(f"⚠️  OpenCV 창 설정 실패: {e}")
-    win_fix_times = [time.time() + d for d in (2, 5, 9, 14, 20)] if has_display else []
+        if show_cv:
+            print(f"⚠️  OpenCV 창 설정 실패: {e}")
+    win_fix_times = [time.time() + d for d in (2, 5, 9, 14, 20)] if show_cv else []
 
     # 웹 UI 창에서 누른 키 (터미널 키는 TerminalKeys가 엔터 없이 받음)
     term_keys = queue.Queue()
@@ -2394,7 +2472,8 @@ def main():
                 prev_state = state
 
             proc_ema.update((time.time() - curr_time) * 1000.0)   # 화면 출력 전까지 처리 시간
-            cv2.imshow(WINDOW_NAME, frame)
+            if show_cv:
+                cv2.imshow(WINDOW_NAME, frame)
             if win_fix_times and time.time() >= win_fix_times[0]:
                 win_fix_times.pop(0)
                 try:
@@ -2403,7 +2482,7 @@ def main():
                         cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                 except cv2.error:
                     pass
-            key = cv2.waitKey(1) & 0xFF
+            key = (cv2.waitKey(1) & 0xFF) if show_cv else 0xFF
             if key == 0xFF:                    # OpenCV 창에 입력 없으면 터미널 입력 확인
                 try:
                     key = ord(term_keys.get_nowait())

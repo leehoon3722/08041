@@ -69,6 +69,21 @@
   .dot.sim { background: var(--warn); }
   .clock { font-variant-numeric: tabular-nums; font-size: 2.4vh; font-weight: 700; color: var(--text); }
 
+  /* 터치스크린용 버튼 (주소에 ?touch=1 일 때만 보임) */
+  .touch-btn {
+    display: none; align-items: center; gap: 0.8vw;
+    border: 0; border-radius: 999px; cursor: pointer;
+    padding: 1.6vh 2.2vw; min-height: 6.4vh;
+    font: inherit; font-size: 2.4vh; font-weight: 800; color: #fff;
+    background: var(--accent);
+    touch-action: manipulation; -webkit-user-select: none; user-select: none;
+  }
+  body.touch .touch-btn { display: flex; }
+  .touch-btn svg { width: 2.8vh; height: 2.8vh; }
+  .touch-btn:active { transform: scale(0.96); filter: brightness(0.9); }
+  .touch-btn[disabled] { background: var(--panel-2); color: var(--muted); }
+  body.touch { -webkit-user-select: none; user-select: none; }
+
   /* ── 본문 ── */
   main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.4vw; min-height: 0; }
   .card {
@@ -233,6 +248,10 @@
       <div class="chip">카메라 <b id="camFps">–</b> fps</div>
       <div class="chip">분석 <b id="procMs">–</b> ms</div>
       <div class="clock" id="clock">--:--:--</div>
+      <button class="touch-btn" id="recalBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        <span id="recalText">재측정</span>
+      </button>
     </div>
   </header>
 
@@ -574,6 +593,25 @@
     if (failCount >= 3) $("lost").classList.add("show");
   }
   poll();
+
+  // 터치스크린(?touch=1): 재측정 버튼 → 프로그램에 R 키와 같은 명령
+  if (/[?&]touch=1/.test(location.search)) {
+    document.body.classList.add("touch");
+    var btn = $("recalBtn");
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      btn.disabled = true;                       // 연달아 눌러도 한 번만
+      $("recalText").textContent = "재측정 시작!";
+      var x = new XMLHttpRequest();
+      x.open("POST", "/api/key?k=r");
+      x.onloadend = function () {
+        if (x.status !== 200) $("recalText").textContent = "연결 안 됨";
+        setTimeout(function () { btn.disabled = false; $("recalText").textContent = "재측정"; }, 3000);
+      };
+      x.send();
+    });
+    document.addEventListener("contextmenu", function (e) { e.preventDefault(); });   // 길게 누르기 메뉴 막기
+  }
 
   // 키보드 포커스가 이 화면에 있어도 r(재캘리브레이션) / b(알림음 테스트) / q(종료)가 프로그램에 전달되게
   document.addEventListener("keydown", function (e) {
