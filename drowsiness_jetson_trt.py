@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0       # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -1424,6 +1424,9 @@ class DistractionMonitor:
         self._last_t   = None
         self.dyaw      = 0.0
         self.dpitch    = 0.0
+        self.level     = 0
+        if verbose:
+            print("[머리 자세] 정면 기준 초기화 — 캘리브레이션 동안 다시 잡음")
 
     def clear_timers(self):
         """정면 기준은 그대로 두고 한눈 판 시간 기록만 지움 (일시정지 해제 때)."""
@@ -1432,9 +1435,6 @@ class DistractionMonitor:
         self.vats_sum = 0.0
         self._last_t  = None
         self.level    = 0
-        self.level     = 0
-        if verbose:
-            print("[머리 자세] 정면 기준 초기화 — 캘리브레이션 동안 다시 잡음")
 
     def add_calib(self, yaw: float, pitch: float):
         self.calib.append((yaw, pitch))
