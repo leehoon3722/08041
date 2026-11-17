@@ -23,6 +23,10 @@
   body[data-level="1"] { --level: var(--warn); --level-rgb: 255, 176, 32; }
   body[data-level="2"] { --level: var(--danger); --level-rgb: 255, 77, 79; }
   body[data-level="calib"] { --level: var(--accent); --level-rgb: 74, 168, 255; }
+  body[data-level="paused"] { --level: var(--muted); --level-rgb: 138, 152, 171; }
+  .overlay.pause .big { font-size: 6vh; letter-spacing: 0.1em; }
+  .pause-icon { display: flex; gap: 2.2vh; }
+  .pause-icon i { width: 2.4vh; height: 9vh; border-radius: 0.8vh; background: var(--text); }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
@@ -209,7 +213,7 @@
   }
 </style>
 </head>
-<body data-level="0">
+<body data-level="0" id="pageBody">
 <div class="edge"></div>
 <div class="app">
   <header>
@@ -262,6 +266,12 @@
           <div class="overlay" id="faceOverlay">
             <div class="big">얼굴을 찾는 중…</div>
             <div class="small" id="faceSmall">카메라 정면에 앉아 주세요</div>
+          </div>
+
+          <div class="overlay pause" id="pauseOverlay">
+            <div class="pause-icon"><i></i><i></i></div>
+            <div class="big">일시정지</div>
+            <div class="small">경고음과 경고 장치가 멈춰 있어요 · S 키를 누르면 다시 시작해요</div>
           </div>
 
           <div class="hands-banner" id="handsBanner">✋ 핸들을 잡아 주세요</div>
@@ -374,6 +384,7 @@
     0: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     1: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6"/><path d="M12 17h.01"/></svg>',
     2: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.6" stroke-linecap="round"><path d="M9 6v12"/><path d="M15 6v12"/></svg>',
     wait: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>'
   };
   var LEVEL_TEXT = { 0: "정상", 1: "주의", 2: "위험" };
@@ -384,7 +395,7 @@
     distract: function (s) { return "최근 " + Math.round(s.vats_window) + "초간 한눈판 시간 " + Math.round(s.vats) + "초"; },
     noface: function () { return "운전자 얼굴이 보이지 않아요"; }
   };
-  var LOG_COLOR = { OFF: "var(--ok)", LV1_WARN: "var(--warn)", LV2_DANGER: "var(--danger)", hands: "var(--danger)", calib: "var(--accent)" };
+  var LOG_COLOR = { OFF: "var(--ok)", LV1_WARN: "var(--warn)", LV2_DANGER: "var(--danger)", hands: "var(--danger)", calib: "var(--accent)", pause: "var(--muted)", resume: "var(--ok)" };
 
   var lastEvent = 0, failCount = 0, lastIcon = null;
 
@@ -408,12 +419,17 @@
   function render(s) {
     var level = s.calibrated ? s.level : 0;
     var searching = s.calibrated && !s.face && level === 0;     // 얼굴을 잠깐 놓친 상태
-    document.body.setAttribute("data-level", s.calibrated && !searching ? String(level) : "calib");
+    var paused = !!s.paused;
+    attr("pageBody", "data-level", paused ? "paused" : (s.calibrated && !searching ? String(level) : "calib"));
+    tog("pauseOverlay", "show", paused);
 
     // 상태 카드
-    var iconKey = s.calibrated && !searching ? level : "wait";
+    var iconKey = paused ? "pause" : (s.calibrated && !searching ? level : "wait");
     if (iconKey !== lastIcon) { html("statusIcon", ICONS[iconKey]); lastIcon = iconKey; }
-    if (!s.calibrated) {
+    if (paused) {
+      txt("statusText", "일시정지");
+      txt("statusCause", "S 키를 누르면 다시 시작해요");
+    } else if (!s.calibrated) {
       txt("statusText", "준비 중");
       txt("statusCause", "운전자 기준 측정 중");
     } else if (searching) {
@@ -434,7 +450,7 @@
 
     // 캘리브레이션 안내
     var calib = !s.calibrated && s.face;
-    tog("calibOverlay", "show", calib);
+    tog("calibOverlay", "show", calib && !paused);
     if (calib) {
       var closedPhase = s.calib_phase === "closed";
       var dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
@@ -446,7 +462,7 @@
       css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(dur, 0.01))).toFixed(1));
       txt("ringText", Math.ceil(s.calib_rem));
     }
-    tog("faceOverlay", "show", !s.face);
+    tog("faceOverlay", "show", !s.face && !paused);
     if (!s.face) {
       txt("faceSmall", s.calibrated && s.missing_sec > 0
         ? "얼굴이 " + s.missing_sec.toFixed(0) + "초째 보이지 않아요 (" + s.face_missing_sec.toFixed(0) + "초면 위험)"
@@ -562,7 +578,7 @@
   // 키보드 포커스가 이 화면에 있어도 r(재캘리브레이션) / b(알림음 테스트) / q(종료)가 프로그램에 전달되게
   document.addEventListener("keydown", function (e) {
     var k = (e.key || "").toLowerCase();
-    if (k === "r" || k === "b" || k === "q") {
+    if (k === "r" || k === "b" || k === "q" || k === "s") {
       var x = new XMLHttpRequest();
       x.open("POST", "/api/key?k=" + k);
       x.send();
