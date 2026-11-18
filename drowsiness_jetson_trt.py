@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -131,6 +131,10 @@ PERCLOS_SOUND_SEC  = 2.5    # PERCLOS 경보는 경고음을 이 시간만 울�
 # 캘리브레이션 — 2단계 (정면 보고 눈 뜨기 → 눈 감기)
 CALIB_MODE          = "blink"  # "blink": 5초 동안 천천히 5번 깜빡이기 (뜬 눈·감은 눈을 한 번에 측정)
                                # "open_close": 예전 방식 — 3초 눈 뜨기 → 2초 눈 감기
+CALIB_INTRO_SEC     = 3.5   # 인사 화면 시간 ("안녕하세요 졸음운전 방지 시스템을 시작합니다") — 음성 길이보다 짧으면 음성 길이 사용
+CALIB_READY_SEC     = 3.0   # 측정 전 카운트다운 ("카메라를 정면으로 봐 주세요 3·2·1")
+CALIB_DONE_SHOW_SEC = 2.0   # 측정 끝난 뒤 "측정 완료" 표시 시간 (웹 UI)
+GREETING_SOUND_FILE = "greeting.wav"   # 인사 음성 (파이썬 파일과 같은 폴더). 없으면 문구만 표시
 CALIB_BLINK_SEC     = 5.0   # 깜빡임 측정 시간
 CALIB_BLINK_TARGET  = 5     # 안내할 깜빡임 횟수
 CALIB_BLINK_MIN     = 3     # 이 횟수 이상 잡혀야 성공
@@ -1214,6 +1218,8 @@ class AdaptiveThreshold:
     """
 
     def __init__(self, recalib_interval, recalib_window_sec, fps, max_drift):
+        self.intro_dur        = CALIB_INTRO_SEC   # 인사 음성 길이에 맞춰 main()에서 늘림
+        self.on_intro         = None              # 인사 시작할 때 부를 함수 (음성 재생)
         self.recalib_interval = recalib_interval
         self.max_drift        = max_drift
         self.long_term_buf    = deque(maxlen=int(fps * recalib_window_sec))
@@ -1221,8 +1227,11 @@ class AdaptiveThreshold:
 
     def reset(self, verbose: bool = True):
         """새 탑승자를 위한 캘리브레이션 초기화 (R 키)."""
-        self.phase         = "blink" if CALIB_MODE == "blink" else "open"   # → "done"
+        # 단계: "intro"(인사) → "ready"(카운트다운) → "blink" 또는 "open"→"closed" → "done"
+        self._first_phase  = "blink" if CALIB_MODE == "blink" else "open"
+        self.phase         = "intro"
         self._phase_start  = None
+        self.done_at       = None       # 측정 끝난 시각 (화면 "측정 완료" 표시용)
         self._blink_buf    = []         # 깜빡임 단계: (시각, 원본 EAR)
         self._blink_retry  = CALIB_BLINK_RETRY
         self.blink_count   = 0          # 지금까지 잡힌 깜빡임 (화면 표시용)
@@ -1266,6 +1275,7 @@ class AdaptiveThreshold:
         self.thr_open = self.threshold + CLOSE_HYST * gap
 
     def _finish(self, now: float):
+        self.done_at = now
         self._set_threshold()
         self.phase, self.is_calibrated, self._last_recalib = "done", True, now
         c = f"{self.closed_level:.3f}" if self.closed_level is not None else "측정 안 함(기본 비율)"
@@ -1347,6 +1357,25 @@ class AdaptiveThreshold:
 
         # ── 캘리브레이션 ──
         if not self.is_calibrated:
+            # ① 인사: 얼굴이 처음 보이는 순간 시작 (사람이 앉으면 인사) — 이 동안 눈 데이터는 안 씀
+            if self.phase == "intro":
+                if self._phase_start is None:
+                    if ear <= 0:
+                        return False                       # 얼굴 나올 때까지 대기
+                    self._phase_start = now
+                    print("👋 [캘리브레이션] 안녕하세요 — 졸음운전 방지 시스템을 시작합니다")
+                    if self.on_intro is not None:
+                        try: self.on_intro()
+                        except Exception as e: print(f"⚠️  인사 음성 실패: {e}")
+                if now - self._phase_start >= self.intro_dur:
+                    self.phase, self._phase_start = "ready", now
+                return False
+            # ② 카운트다운
+            if self.phase == "ready":
+                if now - self._phase_start >= CALIB_READY_SEC:
+                    self.phase, self._phase_start = self._first_phase, now
+                    print("[캘리브레이션] 측정 시작 — " + _calib_guide().split(": ", 1)[-1])
+                return False
             if self._phase_start is None:
                 self._phase_start = now
             el = now - self._phase_start
@@ -1412,7 +1441,9 @@ class AdaptiveThreshold:
 
     def calib_remaining(self) -> float:
         """현재 캘리브레이션 단계의 남은 시간 (초)."""
-        dur = (CALIB_BLINK_SEC if self.phase == "blink"
+        dur = (self.intro_dur if self.phase == "intro"
+               else CALIB_READY_SEC if self.phase == "ready"
+               else CALIB_BLINK_SEC if self.phase == "blink"
                else CALIB_CLOSED_SEC if self.phase == "closed" else CALIB_OPEN_SEC)
         if self._phase_start is None:
             return dur
@@ -1642,8 +1673,8 @@ class AlarmSound:
         self._fails  = 0
         self.files   = {}
         self.device  = SOUND_DEVICE
-        self._buz_pending = False
-        self._playing     = 0              # 지금 재생 중: 0 없음, 1/2 단계음, "buz" 알림음
+        self._pending     = None           # 1회 재생 대기 ("buz" 알림음 / "greet" 인사 음성)
+        self._playing     = 0              # 지금 재생 중: 0 없음, 1/2 단계음, "buz"/"greet" 1회 소리
         if SOUND_ENABLE and not self.enabled:
             print("⚠️  [경고음] aplay를 찾지 못해 경고음 없이 동작합니다 (sudo apt install alsa-utils)")
         if self.enabled:
@@ -1657,6 +1688,14 @@ class AlarmSound:
                     print(f"⚠️  [경고음] BUZ_SOUND_FILE({BUZ_SOUND_FILE}) 없음 → 기본 알림음 사용")
                 self.files["buz"] = self._make_wav_seq("buz.wav", [(1320, 0.22), (0, 0.06), (990, 0.30), (0, 0.12),
                                                                   (1320, 0.22), (0, 0.06), (990, 0.30)])
+            gp = GREETING_SOUND_FILE
+            if gp and not os.path.isabs(gp):
+                gp = os.path.join(os.path.dirname(os.path.abspath(__file__)), gp)
+            if gp and os.path.isfile(gp):
+                self.files["greet"] = gp
+                print(f"✅ [인사 음성] {os.path.basename(gp)} ({self._dur(gp):.1f}초)")
+            elif GREETING_SOUND_FILE:
+                print(f"⚠️  [인사 음성] {gp} 없음 → 인사 문구만 표시")
             print(f"✅ [경고음] 디스플레이 스피커 사용 ({SOUND_DEVICE})")
 
     @staticmethod
@@ -1710,14 +1749,21 @@ class AlarmSound:
     def play_buz(self):
         """ESP32 !BUZ# → 알림음 1회. 단계음이 울리는 중이면 잠깐 끊고 알림음 → 끝나면 단계음 다시.
         (HDMI 출력 장치는 한 번에 소리 하나만 낼 수 있어서 겹치지 않고 순서대로)"""
-        if not self.enabled:
+        self.play_once("buz")
+
+    def play_once(self, key: str):
+        """1회 소리 (알림음·인사 음성). 같은 소리가 재생 중이면 무시."""
+        if not self.enabled or key not in self.files:
             return
         with self._cond:
-            if self._playing == "buz":
-                return                         # 이미 알림음 재생 중
-            self._buz_pending = True
+            if self._playing == key:
+                return
+            self._pending = key
             self._kill()
             self._cond.notify_all()
+
+    def greet_duration(self) -> float:
+        return self._dur(self.files["greet"]) if "greet" in self.files else 0.0
 
     def start(self):
         if self.enabled:
@@ -1732,7 +1778,7 @@ class AlarmSound:
             if level == self._level:
                 return
             self._level = level
-            if self._playing != "buz":         # 알림음은 끝까지 재생, 끝나면 새 단계음
+            if not isinstance(self._playing, str):   # 알림음·인사는 끝까지 재생, 끝나면 새 단계음
                 self._kill()                   # 바뀌면 지금 소리를 바로 끊음
             self._cond.notify_all()
 
@@ -1745,13 +1791,12 @@ class AlarmSound:
     def _loop(self):
         while True:
             with self._cond:
-                while self._level == 0 and not self._buz_pending and not self._stop:
+                while self._level == 0 and self._pending is None and not self._stop:
                     self._cond.wait()
                 if self._stop:
                     return
-                if self._buz_pending:
-                    self._buz_pending = False
-                    lv = "buz"
+                if self._pending is not None:
+                    lv, self._pending = self._pending, None
                 else:
                     lv = self._level
                 self._playing = lv
@@ -1777,7 +1822,7 @@ class AlarmSound:
                 proc.returncode = 1
             with self._cond:
                 self._playing = 0
-            if proc.returncode not in (0, -15) and (lv == "buz" or self._level == lv):
+            if proc.returncode not in (0, -15) and (isinstance(lv, str) or self._level == lv):
                 self._fails += 1
                 msg = err.decode(errors="ignore").strip().splitlines()
                 print(f"⚠️  [경고음] aplay 오류: {msg[-1] if msg else proc.returncode}")
@@ -2179,7 +2224,11 @@ def draw_overlay(frame, state, fps, perclos, ear, threshold,
 
     if not is_calibrated:
         # 2단계 캘리브레이션 안내: 정면 보고 눈 뜨기 → 눈 감기
-        if calib_phase == "blink":
+        if calib_phase == "intro":
+            msg, col = "HELLO!", (0, 220, 120)
+        elif calib_phase == "ready":
+            msg, col = f"LOOK AT CAMERA {calib_rem:.0f}", (0, 220, 220)
+        elif calib_phase == "blink":
             msg, col = f"BLINK SLOWLY {calib_rem:.1f}s", (0, 220, 220)
         elif calib_phase == "closed":
             msg, col = f"CLOSE EYES {calib_rem:.1f}s", (0, 160, 255)
@@ -2289,6 +2338,13 @@ def main():
     tkeys    = TerminalKeys()                                    # 터미널에서도 R/Q/B
     _term_keys = tkeys
     _web_ui  = web
+    # 인사 단계: 인사 음성이 끝날 때까지 기다린 뒤 카운트다운
+    adaptive_thr.intro_dur = max(CALIB_INTRO_SEC, sound.greet_duration() + 0.4)
+    def _on_intro():
+        if not system_paused:
+            sound.play_once("greet")
+        web.event("calib", "안녕하세요 — 측정을 시작합니다")
+    adaptive_thr.on_intro = _on_intro
     fps_ema  = EMAFilter(0.1)     # 화면 표시용 (순간값은 출렁여서 평균)
     proc_ema = EMAFilter(0.1)     # 프레임당 처리 시간(ms)
 
@@ -2528,6 +2584,10 @@ def main():
                     calib_open_sec=CALIB_OPEN_SEC, calib_closed_sec=CALIB_CLOSED_SEC,
                     calib_blink_sec=CALIB_BLINK_SEC, blink_count=adaptive_thr.blink_count,
                     blink_target=CALIB_BLINK_TARGET, calib_msg=adaptive_thr.calib_msg,
+                    intro_sec=adaptive_thr.intro_dur, calib_ready_sec=CALIB_READY_SEC, calib_mode=CALIB_MODE,
+                    calib_done_ago=(round(time.time() - adaptive_thr.done_at, 1)
+                                    if adaptive_thr.done_at else None),
+                    calib_done_show=CALIB_DONE_SHOW_SEC,
                     face=bool(bboxes), face_box=face_box, missing_sec=round(missing_sec, 1),
                     face_missing_sec=FACE_MISSING_DANGER_SEC,
                     ear=round(float(ema_ear or 0.0), 4),

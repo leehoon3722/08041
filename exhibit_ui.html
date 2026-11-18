@@ -126,6 +126,9 @@
   .overlay.show { display: flex; }
   .overlay .big { font-size: 4.4vh; font-weight: 800; letter-spacing: -0.02em; }
   .overlay .small { font-size: 2vh; color: var(--muted); }
+  /* 인사·측정 완료 화면: 글자를 크게 */
+  .overlay.greet .big { font-size: 8vh; letter-spacing: -0.03em; }
+  .overlay.greet .small { font-size: 3.4vh; color: var(--text); }
   .ring { width: 16vh; height: 16vh; }
   .ring circle { fill: none; stroke-width: 7; }
   .ring .bg { stroke: rgba(255,255,255,.1); }
@@ -278,7 +281,7 @@
               <div class="step" id="stepOpen">1 · 정면 보고 눈 뜨기</div>
               <div class="step" id="stepClosed">2 · 눈 감기</div>
             </div>
-            <svg class="ring" viewBox="0 0 120 120">
+            <svg class="ring" id="calibRing" viewBox="0 0 120 120">
               <circle class="bg" cx="60" cy="60" r="52"/>
               <circle class="fg" id="ringFg" cx="60" cy="60" r="52" stroke-dasharray="326.7" stroke-dashoffset="0"/>
               <text x="60" y="60" id="ringText">3</text>
@@ -473,18 +476,36 @@
     txt("camFps", Math.round(s.cam_fps || s.fps || 0));
     txt("procMs", Math.round(s.proc_ms || 0));
 
-    // 캘리브레이션 안내
-    var calib = !s.calibrated && s.face;
+    // 캘리브레이션 안내: 인사 → 카운트다운 → 깜빡임(또는 뜨기/감기) → 측정 완료
+    var doneShow = s.calibrated && s.face && s.calib_done_ago != null && s.calib_done_ago < (s.calib_done_show || 2);
+    var calib = (!s.calibrated && s.face) || doneShow;
+    var mode = doneShow ? "done" : s.calib_phase;
     tog("calibOverlay", "show", calib && !paused);
-    var blinkMode = s.calib_phase === "blink";
-    css("calibSteps", "display", blinkMode ? "none" : "");
-    tog("blinkDots", "show", calib && blinkMode);
-    if (calib && blinkMode) {
+    tog("calibOverlay", "greet", mode === "intro" || mode === "done");
+    css("calibSteps", "display", (mode === "open" || mode === "closed") ? "" : "none");
+    css("calibRing", "display", (mode === "intro" || mode === "done") ? "none" : "");
+    tog("blinkDots", "show", calib && mode === "blink");
+    tog("calibSmall", "calib-warn", calib && mode === "blink" && !!s.calib_msg);
+    if (calib && mode === "intro") {
+      txt("calibBig", "안녕하세요!");
+      txt("calibSmall", "졸음운전 방지 시스템을 시작합니다");
+    } else if (calib && mode === "done") {
+      txt("calibBig", "측정 완료!");
+      txt("calibSmall", "안전 운전하세요");
+    } else if (calib && mode === "ready") {
+      var target0 = s.blink_target || 5;
+      txt("calibBig", "카메라를 정면으로 봐 주세요");
+      txt("calibSmall", s.calib_mode === "blink"
+        ? "곧 눈 깜빡임 측정을 시작해요 · 천천히 " + target0 + "번"
+        : "곧 측정을 시작해요");
+      css("ringFg", "stroke", "var(--accent)");
+      css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(s.calib_ready_sec || 3, 0.01))).toFixed(1));
+      txt("ringText", String(Math.max(1, Math.ceil(s.calib_rem))));
+    } else if (calib && mode === "blink") {
       // 깜빡임 캘리브레이션: 원 = 남은 시간, 가운데 = 잡힌 깜빡임 수, 아래 점 = 목표 횟수
       var target = s.blink_target || 5, n = Math.min(s.blink_count || 0, target);
       txt("calibBig", "정면을 보고 천천히 " + target + "번 깜빡여 주세요");
       txt("calibSmall", s.calib_msg || ("꾹 감았다가 떠 주세요 · 남은 시간 " + Math.ceil(s.calib_rem) + "초"));
-      tog("calibSmall", "calib-warn", !!s.calib_msg);
       css("ringFg", "stroke", n >= target ? "var(--ok)" : "var(--accent)");
       css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(s.calib_blink_sec, 0.01))).toFixed(1));
       txt("ringText", n + "/" + target);
@@ -492,8 +513,7 @@
       for (var i = 0; i < target; i++) dots += '<i class="' + (i < n ? "on" : "") + '"></i>';
       html("blinkDots", dots);
     } else if (calib) {
-      tog("calibSmall", "calib-warn", false);
-      var closedPhase = s.calib_phase === "closed";
+      var closedPhase = mode === "closed";
       var dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
       cls("stepOpen", "step " + (closedPhase ? "done" : "active"));
       cls("stepClosed", "step " + (closedPhase ? "active" : ""));
