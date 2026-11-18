@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 1        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -92,7 +92,7 @@ CAM_KEEP_FPS = True     # 어두워도 노출 시간을 늘려 FPS를 떨어뜨�
 CAM_EXPOSURE = None     # 수동 노출 (단위 0.1ms, 예: 250 = 25ms, 30fps면 333 이하). None = 자동 노출
 
 # 블루투스
-FORCE_SIM_MODE        = True  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
+FORCE_SIM_MODE        = False  # True: BT 시도 없이 즉시 시뮬레이션 모드 진입
 ESP32_MAC_ADDR        = "08:3A:F2:B9:8C:6A"
 BT_CHANNEL            = 1
 BT_TIMEOUT            = 5.0
@@ -187,6 +187,7 @@ WEB_STREAM_WIDTH    = 480            # 웹 영상 가로 크기 (작을수록 �
 WEB_JPEG_QUALITY    = 70
 WEB_UI_AUTO_OPEN    = True           # 프로그램 실행 시 두 번째 모니터에 UI 자동으로 띄움 (start_exhibit_ui.sh 사용)
 WEB_UI_MONITOR      = ""             # 두 번째 모니터 이름 (xrandr 이름, 예: "DP-0"). 빈칸이면 자동 선택
+WEB_UI_LAYOUT       = "mirror"       # "mirror": 터치스크린 UI를 두 번째 모니터에 같은 화면으로 / "dual": 모니터마다 따로
 UI_ON_TOUCHSCREEN   = True           # True: 터치스크린에도 웹 UI(재측정 버튼 포함)를 띄우고 OpenCV 창은 숨김
                                      # False: 터치스크린엔 예전처럼 OpenCV 창, 웹 UI는 두 번째 모니터에만
 BUZ_SOUND_FILE      = None           # ESP32 !BUZ# 알림음. None이면 '띵-동-띵-동' 자동 생성,
@@ -1941,7 +1942,7 @@ class WebUI:
             return
         try:
             # 터미널과 분리해서 실행 — 브라우저가 터미널 설정을 바꿔 키 입력(Q/R/S)이 먹지 않던 문제 방지
-            env = dict(os.environ, UI_TOUCH="1" if UI_ON_TOUCHSCREEN else "0")
+            env = dict(os.environ, UI_TOUCH="1" if UI_ON_TOUCHSCREEN else "0", UI_LAYOUT=WEB_UI_LAYOUT)
             subprocess.Popen(["bash", sh] + ([WEB_UI_MONITOR] if WEB_UI_MONITOR else []),
                              stdin=subprocess.DEVNULL, start_new_session=True, env=env)
         except OSError as e:
