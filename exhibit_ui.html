@@ -155,6 +155,9 @@
 
   /* 오른쪽 */
   .side { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 1.4vh; min-height: 0; }
+  /* 졸음 경향(PERCLOS) 기능을 끄면 카드 숨기고 나머지 칸을 늘림 */
+  body.no-perclos #percCard, body.no-perclos .perc-legend { display: none; }
+  body.no-perclos .side { grid-template-rows: auto auto minmax(0, 1fr); }
   .status {
     padding: 2.4vh 1.8vw;
     display: grid; grid-template-columns: auto 1fr; gap: 1.6vw; align-items: center;
@@ -393,8 +396,8 @@
   <footer>
     <div class="card legend">
       <div class="legend-item"><span class="badge" style="background:var(--ok)"></span><div><b>정상</b>눈을 뜨고 정면을 보고 있음</div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 한눈 3초 (졸음 경향 15% → 음성 안내)</div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 얼굴 사라짐 (졸음 경향 30% → 음성 반복)</div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 한눈 3초<span class="perc-legend"> (졸음 경향 15% → 음성 안내)</span></div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 얼굴 사라짐<span class="perc-legend"> (졸음 경향 30% → 음성 반복)</span></div></div>
     </div>
     <div class="card log" id="log"><div class="log-title">최근 기록</div></div>
   </footer>
@@ -578,6 +581,7 @@
     $("mPerc2").firstChild.textContent = Math.round(s.perclos_lv2 * 100) + "% 위험";
     txt("percDesc", "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율");
     html("percVal", Math.round(s.perclos * 100) + "<small>%</small>");
+    tog("pageBody", "no-perclos", s.perclos_enabled === false);
     var plv = s.perclos_level || 0;
     cls("percBadge", "perc-badge" + (plv ? " lv" + plv : ""));
     txt("percBadge", plv === 2 ? "2단계 · 위험" : plv === 1 ? "1단계 · 주의" : "");
