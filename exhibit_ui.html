@@ -5,245 +5,160 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>졸음운전 감지 시스템</title>
 <style>
+  /* 시안 A · 대시보드 — 지금 화면을 정리하고, 아래에 '눈 뜬 정도' 그래프와 '이번 운행' 기록 */
   :root {
-    --bg: #0b0f14;
-    --panel: #121821;
-    --panel-2: #18202b;
-    --line: #243042;
-    --text: #e8eef6;
-    --muted: #8a98ab;
-    --ok: #2fd27a;
-    --warn: #ffb020;
-    --danger: #ff4d4f;
-    --accent: #4aa8ff;
-    --level: var(--ok);
-    --level-rgb: 47, 210, 122;
-    --radius: 18px;
+    --bg: #0b0f14; --panel: #121821; --panel-2: #18202b; --line: #243042; --track: #1c2430;
+    --text: #e8eef6; --muted: #8a98ab;
+    --ok: #2fd27a; --warn: #ffb020; --danger: #ff4d4f; --accent: #4aa8ff;
+    --ok-rgb: 47,210,122; --warn-rgb: 255,176,32; --danger-rgb: 255,77,79; --accent-rgb: 74,168,255; --muted-rgb: 138,152,171;
+    --level: var(--ok); --level-rgb: var(--ok-rgb);
+    --chart-line: #4aa8ff; --chart-closed: rgba(255,176,32,.18);
+    --video-radius: 12px;
   }
-  body[data-level="1"] { --level: var(--warn); --level-rgb: 255, 176, 32; }
-  body[data-level="2"] { --level: var(--danger); --level-rgb: 255, 77, 79; }
-  body[data-level="calib"] { --level: var(--accent); --level-rgb: 74, 168, 255; }
-  body[data-level="paused"] { --level: var(--muted); --level-rgb: 138, 152, 171; }
-  .overlay.pause .big { font-size: 6vh; letter-spacing: 0.1em; }
-  .pause-icon { display: flex; gap: 2.2vh; }
-  .pause-icon i { width: 2.4vh; height: 9vh; border-radius: 0.8vh; background: var(--text); }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
-    background: var(--bg);
-    color: var(--text);
+    background: var(--bg); color: var(--text);
     font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", sans-serif;
-    overflow: hidden;
-    -webkit-font-smoothing: antialiased;
+    overflow: hidden; -webkit-font-smoothing: antialiased;
   }
-  .app {
-    height: 100vh;
-    display: grid;
-    grid-template-rows: auto 1fr auto;
-    gap: 1.6vh;
-    padding: 2.2vh 2vw;
-  }
-
-  /* ── 상단 ── */
-  header { display: flex; align-items: center; justify-content: space-between; gap: 2vw; }
-  .brand { display: flex; align-items: center; gap: 1vw; }
-  .logo {
-    width: 4.6vh; height: 4.6vh; border-radius: 1.2vh;
-    display: grid; place-items: center;
-    background: linear-gradient(135deg, #1f6fd1, #4aa8ff);
-  }
-  .logo svg { width: 62%; height: 62%; }
-  h1 { margin: 0; font-size: 3.1vh; font-weight: 800; letter-spacing: -0.02em; }
-  .sub { color: var(--muted); font-size: 1.6vh; margin-top: 0.3vh; }
-  .chips { display: flex; gap: 0.8vw; align-items: center; }
-  .chip {
-    display: flex; align-items: center; gap: 0.6vw;
-    background: var(--panel); border: 1px solid var(--line);
-    padding: 0.9vh 1vw; border-radius: 999px;
-    font-size: 1.55vh; color: var(--muted); white-space: nowrap;
-  }
-  .chip b { color: var(--text); font-weight: 700; }
-  .dot { width: 1vh; height: 1vh; border-radius: 50%; background: var(--muted); }
-  .dot.on { background: var(--ok); }
-  .dot.off { background: var(--danger); }
-  .dot.sim { background: var(--warn); }
-  .clock { font-variant-numeric: tabular-nums; font-size: 2.4vh; font-weight: 700; color: var(--text); }
-
-  /* 터치스크린용 버튼 (주소에 ?touch=1 일 때만 보임) */
-  .touch-btn {
-    display: none; align-items: center; gap: 0.8vw;
-    border: 0; border-radius: 999px; cursor: pointer;
-    padding: 1.6vh 2.2vw; min-height: 6.4vh;
-    font: inherit; font-size: 2.4vh; font-weight: 800; color: #fff;
-    background: var(--accent);
-    touch-action: manipulation; -webkit-user-select: none; user-select: none;
-  }
-  body.touch .touch-btn { display: flex; }
-  .touch-btn svg { width: 2.8vh; height: 2.8vh; }
-  .touch-btn:active { transform: scale(0.96); filter: brightness(0.9); }
-  .touch-btn[disabled] { background: var(--panel-2); color: var(--muted); }
   body.touch { -webkit-user-select: none; user-select: none; }
+  body[data-level="1"] { --level: var(--warn); --level-rgb: var(--warn-rgb); }
+  body[data-level="2"] { --level: var(--danger); --level-rgb: var(--danger-rgb); }
+  body[data-level="calib"] { --level: var(--accent); --level-rgb: var(--accent-rgb); }
+  body[data-level="paused"] { --level: var(--muted); --level-rgb: var(--muted-rgb); }
+  .num { font-variant-numeric: tabular-nums; }
 
-  /* ── 본문 ── */
-  main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.4vw; min-height: 0; }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    min-height: 0;
-  }
-
-  /* 영상 */
-  .video-card {
-    position: relative; overflow: hidden;
-    display: grid; place-items: center;
-    background: #05080b;
-    border: 2px solid rgba(var(--level-rgb), .55);
-    transition: border-color .3s;
-  }
-  body[data-level="1"] .video-card, body[data-level="2"] .video-card { border-width: 0.5vh; }
-  .video-wrap { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
+  /* 영상 + 안내 화면 */
   .video-box { position: relative; aspect-ratio: 4 / 3; max-width: 100%; max-height: 100%; height: 100%; }
-  .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: calc(var(--radius) - 6px); }
+  .video-box img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: var(--video-radius, 12px); background: #05080b; }
   .video-box > svg.facelayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .facebox { fill: none; stroke: var(--level); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
   .corner { stroke: var(--level); stroke-width: 4; fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
-  .video-tag {
-    position: absolute; left: 1.6vh; top: 1.6vh;
-    display: flex; align-items: center; gap: 0.6vw;
-    background: rgba(5, 8, 11, .75);
-    padding: 0.7vh 1vw; border-radius: 999px; font-size: 1.5vh; color: var(--muted);
-  }
-  .rec { width: 1vh; height: 1vh; border-radius: 50%; background: var(--danger); animation: blink 1.4s steps(2, jump-none) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
-
   .overlay {
-    position: absolute; inset: 0; display: none;
+    position: absolute; inset: 0; display: none; border-radius: var(--video-radius, 12px);
     flex-direction: column; align-items: center; justify-content: center; gap: 2vh;
-    background: rgba(5, 8, 11, .72);
-    text-align: center;
+    background: rgba(5, 8, 11, .74); color: #f2f5f9; text-align: center; padding: 0 3vw;
   }
   .overlay.show { display: flex; }
   .overlay .big { font-size: 4.4vh; font-weight: 800; letter-spacing: -0.02em; }
-  .overlay .small { font-size: 2vh; color: var(--muted); }
-  /* 인사·측정 완료 화면: 글자를 크게 */
+  .overlay .small { font-size: 2vh; color: #aeb8c6; }
   .overlay.greet .big { font-size: 8vh; letter-spacing: -0.03em; }
-  .overlay.greet .small { font-size: 3.4vh; color: var(--text); }
+  .overlay.greet .small { font-size: 3.4vh; color: #f2f5f9; }
+  .overlay.pause .big { font-size: 6vh; letter-spacing: 0.1em; }
+  .pause-icon { display: flex; gap: 2.2vh; }
+  .pause-icon i { width: 2.4vh; height: 9vh; border-radius: 0.8vh; background: #f2f5f9; }
   .ring { width: 16vh; height: 16vh; }
   .ring circle { fill: none; stroke-width: 7; }
-  .ring .bg { stroke: rgba(255,255,255,.1); }
+  .ring .bg { stroke: rgba(255,255,255,.12); }
   .ring .fg { stroke: var(--accent); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
-  .ring text { fill: var(--text); font-size: 26px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
+  .ring text { fill: #f2f5f9; font-size: 26px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
   .steps { display: flex; gap: 1vw; }
-  .step { padding: 0.8vh 1.2vw; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 1.7vh; }
-  .step.active { border-color: var(--accent); color: var(--text); background: rgba(74,168,255,.14); }
-  .step.done { color: var(--ok); border-color: rgba(47,210,122,.4); }
+  .step { padding: 0.8vh 1.2vw; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); color: #aeb8c6; font-size: 1.7vh; }
+  .step.active { border-color: var(--accent); color: #fff; }
+  .step.done { color: var(--ok); }
   .blink-dots { display: none; gap: 1.2vh; }
   .blink-dots.show { display: flex; }
   .blink-dots i { width: 2.4vh; height: 2.4vh; border-radius: 50%; border: 0.35vh solid var(--accent); }
   .blink-dots i.on { background: var(--accent); }
   .calib-warn { color: var(--warn) !important; }
-
   .hands-banner {
     position: absolute; left: 50%; bottom: 3vh; transform: translateX(-50%);
-    display: none; align-items: center; gap: 1vw;
+    display: none; align-items: center; gap: 1vw; white-space: nowrap;
     background: var(--danger); color: #fff; font-weight: 800; font-size: 2.8vh;
     padding: 1.4vh 2.4vw; border-radius: 999px;
     animation: blink 1s steps(2, jump-none) infinite;
   }
   .hands-banner.show { display: flex; }
+  @keyframes blink { 50% { opacity: .3; } }
+  .rec { width: 1vh; height: 1vh; border-radius: 50%; background: var(--danger); animation: blink 1.4s steps(2, jump-none) infinite; }
 
-  /* 오른쪽 */
-  .side { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 1.4vh; min-height: 0; }
-  /* 졸음 경향(PERCLOS) 기능을 끄면 카드 숨기고 나머지 칸을 늘림 */
-  body.no-perclos #percCard, body.no-perclos .perc-legend { display: none; }
-  body.no-perclos .side { grid-template-rows: auto auto minmax(0, 1fr); }
-  .status {
-    padding: 2.4vh 1.8vw;
-    display: grid; grid-template-columns: auto 1fr; gap: 1.6vw; align-items: center;
-    background: linear-gradient(135deg, rgba(var(--level-rgb), .2), var(--panel) 70%);
-    border-color: rgba(var(--level-rgb), .45);
-  }
-  .status-icon {
-    width: 10vh; height: 10vh; border-radius: 50%;
-    display: grid; place-items: center;
-    background: rgba(var(--level-rgb), .18);
-    border: 3px solid var(--level);
-  }
-  .status-icon svg { width: 55%; height: 55%; stroke: var(--level); }
-  .status-label { font-size: 1.7vh; color: var(--muted); }
-  .status-text { font-size: 6vh; font-weight: 900; line-height: 1.05; color: var(--level); letter-spacing: -0.03em; }
-  .status-cause { font-size: 2vh; margin-top: 0.6vh; min-height: 2.6vh; }
+  .dot { width: 1vh; height: 1vh; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--danger); } .dot.sim { background: var(--warn); }
 
-  .metric { padding: 1.8vh 1.6vw 1.2vh; display: flex; flex-direction: column; gap: 1.2vh; min-height: 0; }
-  .metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
-  .metric-title { font-size: 2vh; font-weight: 700; }
-  /* 졸음 경향은 운전자 상태(ESP32 단계)와 따로 — 카드 자체에 단계 표시 */
-  .perc-badge { display: none; margin-left: 0.6vw; padding: 0.3vh 0.8vw; border-radius: 999px;
-                font-size: 1.5vh; font-weight: 800; color: #111; vertical-align: middle; }
-  .perc-badge.lv1 { display: inline-block; background: var(--warn); }
-  .perc-badge.lv2 { display: inline-block; background: var(--danger); color: #fff; }
-  #percCard.lv1 { border-color: rgba(255, 176, 32, .7); }
-  #percCard.lv2 { border-color: rgba(255, 77, 79, .8); }
-  .metric-desc { font-size: 1.45vh; color: var(--muted); margin-top: 0.3vh; }
-  .metric-value { font-size: 4.2vh; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .metric-value small { font-size: 0.45em; color: var(--muted); font-weight: 600; margin-left: 0.2em; }
-
-  .bar { position: relative; height: 2.2vh; border-radius: 999px; background: var(--panel-2); overflow: visible; }
-  .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--ok); width: 0; }
-  .mark { position: absolute; top: -0.6vh; bottom: -0.6vh; width: 2px; }
-  .mark span { position: absolute; top: 100%; transform: translateX(-50%); margin-top: 0.5vh; font-size: 1.35vh; color: var(--muted); white-space: nowrap; }
-  .mark.w { background: var(--warn); } .mark.d { background: var(--danger); }
-  .scale { height: 2.4vh; }
-
-  .eye-box { display: flex; align-items: center; gap: 0.6vw; margin-left: auto; margin-right: 1.4vw; }
-  .eye { width: 6vh; height: 3vh; }
-  .eye path { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; }
+  .eye path { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
   .eye .iris { fill: var(--accent); stroke: none; }
-  .eye-state { font-size: 1.9vh; font-weight: 700; white-space: nowrap; }
-
-  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4vh; min-height: 0; }
-  .head-wrap { display: flex; align-items: center; gap: 1.2vw; flex: 1; min-height: 0; }
-  .radar { height: 100%; max-height: 14vh; min-height: 8vh; aspect-ratio: 1; flex: none; }
+  .is-closed { color: var(--warn) !important; }
+  .is-bad { color: var(--warn) !important; }
   .radar .grid { stroke: var(--line); fill: none; }
-  .radar .zone { fill: rgba(47,210,122,.08); stroke: rgba(47,210,122,.35); }
+  .radar .zone { fill: rgba(var(--ok-rgb), .1); stroke: rgba(var(--ok-rgb), .45); }
   .radar .pt { fill: var(--accent); }
   .radar .pt.out { fill: var(--warn); }
-  .kv { font-size: 1.5vh; color: var(--muted); line-height: 1.8; font-variant-numeric: tabular-nums; }
-  .kv b { color: var(--text); font-weight: 700; }
-  .hands { flex: 1; display: flex; align-items: center; gap: 1.2vw; }
-  .hands svg { width: 8vh; height: 8vh; }
-  .hands .wheel { stroke: var(--text); fill: none; stroke-width: 5; }
-  .hands-state { font-size: 3vh; font-weight: 800; }
+  [data-hands="on"] #handsState { color: var(--ok); }
+  [data-hands="off"] #handsState { color: var(--danger); }
+  [data-hands="na"] #handsState { color: var(--muted); }
+  .wheel { stroke: currentColor; fill: none; stroke-width: 5; }
+  canvas { display: block; width: 100%; height: 100%; }
 
-  /* 하단 */
-  footer { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.4vw; }
-  .legend { display: flex; gap: 1vw; padding: 1.4vh 1.4vw; align-items: stretch; }
-  .legend-item { flex: 1; display: flex; gap: 0.8vw; align-items: flex-start; font-size: 1.5vh; color: var(--muted); line-height: 1.45; }
-  .legend-item b { display: block; color: var(--text); font-size: 1.7vh; margin-bottom: 0.2vh; }
-  .badge { flex: none; width: 1.3vh; height: 1.3vh; border-radius: 50%; margin-top: 0.5vh; }
-  .log { padding: 1.4vh 1.4vw; display: flex; flex-direction: column; gap: 0.7vh; overflow: hidden; height: 13vh; }
-  .log-title { font-size: 1.5vh; color: var(--muted); }
-  .log-item { display: flex; gap: 0.8vw; font-size: 1.6vh; align-items: center; animation: slide .3s ease-out; }
+  .log-item { display: flex; gap: 0.7vw; font-size: 1.55vh; align-items: center; white-space: nowrap; overflow: hidden; }
   .log-item time { color: var(--muted); font-variant-numeric: tabular-nums; }
-  @keyframes slide { from { opacity: 0; transform: translateY(-0.6vh); } }
+  .badge { flex: none; width: 1.1vh; height: 1.1vh; border-radius: 50%; }
 
-  .lost {
-    position: fixed; inset: 0; display: none; place-items: center;
-    background: rgba(5, 8, 11, .85); z-index: 10; text-align: center;
-  }
+  .lost { position: fixed; inset: 0; display: none; place-items: center; background: rgba(5, 8, 11, .88); color: #f2f5f9; z-index: 10; text-align: center; }
   .lost.show { display: grid; }
   .lost .big { font-size: 4vh; font-weight: 800; }
-  .lost .small { color: var(--muted); font-size: 2vh; margin-top: 1vh; }
-
-  /* 위험: 화면 테두리 빨간 깜빡임 (그림자·블러 대신 테두리만 — 젯슨 나노에서 가볍게) */
+  .lost .small { color: #aeb8c6; font-size: 2vh; margin-top: 1vh; }
   .edge { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; border: 1.2vh solid var(--danger); }
   body[data-level="2"] .edge { display: block; animation: blink 0.8s steps(2, jump-none) infinite; }
 
-  @media (max-aspect-ratio: 4/3) {
-    main, footer { grid-template-columns: 1fr; }
-    .log { display: none; }
-  }
+  .app { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) 24vh; gap: 1.6vh; padding: 2.2vh 2vw; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 2vw; }
+  .brand { display: flex; align-items: center; gap: 1vw; }
+  .logo { width: 4.6vh; height: 4.6vh; border-radius: 1.2vh; display: grid; place-items: center; background: linear-gradient(135deg, #1f6fd1, #4aa8ff); }
+  .logo svg { width: 62%; height: 62%; }
+  h1 { margin: 0; font-size: 3.1vh; font-weight: 800; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 1.6vh; margin-top: 0.3vh; }
+  .chips { display: flex; gap: 0.8vw; align-items: center; }
+  .chip { display: flex; align-items: center; gap: 0.6vw; background: var(--panel); border: 1px solid var(--line); padding: 0.9vh 1vw; border-radius: 999px; font-size: 1.55vh; color: var(--muted); white-space: nowrap; }
+  .chip b { color: var(--text); }
+  .clock { font-size: 2.6vh; font-weight: 800; margin-left: 0.6vw; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; min-height: 0; min-width: 0; }
+  main, .bottom { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 1.4vw; min-height: 0; }
+  .video-card { display: grid; place-items: center; background: #05080b; border: 2px solid rgba(var(--level-rgb), .6); overflow: hidden; position: relative; }
+  body[data-level="1"] .video-card, body[data-level="2"] .video-card { border-width: 0.5vh; }
+  .video-tag { position: absolute; left: 1.6vh; top: 1.6vh; display: flex; align-items: center; gap: 0.6vw; background: rgba(5,8,11,.75); padding: 0.7vh 1vw; border-radius: 999px; font-size: 1.5vh; color: var(--muted); z-index: 1; }
+
+  .side { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 1.4vh; min-height: 0; }
+  .status { padding: 2.2vh 1.6vw; display: grid; grid-template-columns: auto 1fr; gap: 1.4vw; align-items: center;
+            background: linear-gradient(135deg, rgba(var(--level-rgb), .22), var(--panel) 70%); border-color: rgba(var(--level-rgb), .5); }
+  .status-icon { width: 9vh; height: 9vh; border-radius: 50%; display: grid; place-items: center; background: rgba(var(--level-rgb), .18); border: 3px solid var(--level); }
+  .status-icon svg { width: 55%; height: 55%; stroke: var(--level); }
+  .label { font-size: 1.6vh; color: var(--muted); }
+  .status-text { font-size: 5.6vh; font-weight: 900; line-height: 1.05; color: var(--level); letter-spacing: -0.03em; }
+  .status-cause { font-size: 1.9vh; margin-top: 0.5vh; min-height: 2.5vh; }
+
+  .metric { padding: 1.8vh 1.4vw 1.2vh; display: flex; flex-direction: column; gap: 1.1vh; min-height: 0; }
+  .metric-head { display: flex; justify-content: space-between; align-items: center; gap: 1vw; }
+  .metric-title { font-size: 1.9vh; font-weight: 700; }
+  .metric-value { font-size: 4vh; font-weight: 800; white-space: nowrap; }
+  .metric-value small { font-size: 0.45em; color: var(--muted); margin-left: 0.2em; }
+  .eye-box { display: flex; align-items: center; gap: 0.5vw; margin-left: auto; margin-right: 1vw; font-size: 1.8vh; font-weight: 700; }
+  .eye { width: 5.6vh; height: 2.8vh; }
+  .bar { position: relative; height: 2vh; border-radius: 999px; background: var(--track); }
+  .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; width: 0; }
+  .mark { position: absolute; top: -0.5vh; bottom: -0.5vh; width: 2px; }
+  .mark span { position: absolute; top: 100%; transform: translateX(-50%); margin-top: 0.4vh; font-size: 1.3vh; color: var(--muted); white-space: nowrap; }
+  .mark.w { background: var(--warn); } .mark.d { background: var(--danger); }
+  .scale { height: 2.2vh; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4vh; min-height: 0; }
+  .head-wrap { display: flex; align-items: center; justify-content: center; gap: 1.4vw; flex: 1; min-height: 0; }
+  .radar { height: 100%; max-height: 15vh; aspect-ratio: 1; flex: none; }
+  .kv { font-size: 1.5vh; color: var(--muted); line-height: 1.8; }
+  .kv b { color: var(--text); }
+  .hands { flex: 1; display: flex; align-items: center; justify-content: center; gap: 1.2vw; }
+  .hands svg { width: 8vh; height: 8vh; color: var(--text); }
+  #handsState { font-size: 3vh; font-weight: 800; }
+
+  .chart-card { padding: 1.6vh 1.4vw; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 1vh; }
+  .chart-head { display: flex; align-items: baseline; gap: 1vw; }
+  .legend-mini { margin-left: auto; display: flex; gap: 1.2vw; font-size: 1.35vh; color: var(--muted); }
+  .legend-mini i { display: inline-block; width: 1.8vh; height: 0.4vh; vertical-align: middle; margin-right: 0.4vw; border-radius: 2px; }
+  .stats { padding: 1.6vh 1.4vw; display: grid; grid-template-rows: auto 1fr; gap: 1vh; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8vw; }
+  .stat { background: var(--panel-2); border-radius: 12px; padding: 1.2vh 0.8vw; display: flex; flex-direction: column; justify-content: center; }
+  .stat b { font-size: 3.6vh; font-weight: 800; line-height: 1.1; }
+  .stat span { font-size: 1.35vh; color: var(--muted); }
+  .stat.w b { color: var(--warn); } .stat.d b { color: var(--danger); }
 </style>
 </head>
 <body data-level="0" id="pageBody">
@@ -251,41 +166,24 @@
 <div class="app">
   <header>
     <div class="brand">
-      <div class="logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
-        </svg>
-      </div>
-      <div>
-        <h1>졸음운전 감지 시스템</h1>
-        <div class="sub">카메라로 눈과 얼굴 방향을 실시간 분석해 졸음과 전방 주시 태만을 경고합니다</div>
-      </div>
+      <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+      <div><h1>졸음운전 감지 시스템</h1><div class="sub">카메라로 눈과 얼굴 방향을 실시간 분석해 졸음과 전방 주시 태만을 경고합니다</div></div>
     </div>
     <div class="chips">
       <div class="chip"><span class="dot" id="btDot"></span><span id="btText">경고 장치</span></div>
-      <div class="chip">카메라 <b id="camFps">–</b> fps</div>
-      <div class="chip">분석 <b id="procMs">–</b> ms</div>
-      <div class="clock" id="clock">--:--:--</div>
-      <button class="touch-btn" id="recalBtn" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
-        <span id="recalText">재측정</span>
-      </button>
+      <div class="chip">카메라 <b class="num" id="camFps">–</b> fps</div>
+      <div class="clock num" id="clock">--:--:--</div>
     </div>
   </header>
 
   <main>
     <section class="card video-card">
-      <div class="video-wrap">
-        <div class="video-box" id="videoBox">
+      <div class="video-tag"><span class="rec"></span>실시간 분석 중</div>
+      <div class="video-box">
           <img id="video" alt="실시간 카메라 영상">
           <svg class="facelayer" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <g id="faceG" style="display:none">
-              <rect class="facebox" id="faceRect" x="0" y="0" width="0" height="0" rx="1"/>
-              <path class="corner" id="faceCorners" d=""/>
-            </g>
+            <g id="faceG" style="display:none"><path class="corner" id="faceCorners" d=""/></g>
           </svg>
-          <div class="video-tag"><span class="rec"></span>실시간 분석 중</div>
-
           <div class="overlay" id="calibOverlay">
             <div class="steps" id="calibSteps">
               <div class="step" id="stepOpen">1 · 정면 보고 눈 뜨기</div>
@@ -298,126 +196,86 @@
             </svg>
             <div class="blink-dots" id="blinkDots"></div>
             <div class="big" id="calibBig">정면을 보고 눈을 떠 주세요</div>
-            <div class="small" id="calibSmall">운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다</div>
+            <div class="small" id="calibSmall"></div>
           </div>
-
           <div class="overlay" id="faceOverlay">
             <div class="big">얼굴을 찾는 중…</div>
             <div class="small" id="faceSmall">카메라 정면에 앉아 주세요</div>
           </div>
-
           <div class="overlay pause" id="pauseOverlay">
             <div class="pause-icon"><i></i><i></i></div>
             <div class="big">일시정지</div>
             <div class="small">경고음과 경고 장치가 멈춰 있어요 · S 키를 누르면 다시 시작해요</div>
           </div>
-
           <div class="hands-banner" id="handsBanner">✋ 핸들을 잡아 주세요</div>
-        </div>
+
       </div>
     </section>
-
     <section class="side">
       <div class="card status">
         <div class="status-icon" id="statusIcon"></div>
-        <div>
-          <div class="status-label">운전자 상태</div>
-          <div class="status-text" id="statusText">대기</div>
-          <div class="status-cause" id="statusCause">&nbsp;</div>
-        </div>
+        <div><div class="label">운전자 상태</div><div class="status-text" id="statusText">대기</div><div class="status-cause" id="statusCause">&nbsp;</div></div>
       </div>
-
       <div class="card metric">
         <div class="metric-head">
-          <div>
-            <div class="metric-title">눈 감김 시간</div>
-            <div class="metric-desc">연속으로 1초 감으면 주의, 2초면 위험</div>
-          </div>
-          <div class="eye-box">
-            <svg class="eye" viewBox="0 0 70 34">
-              <path id="eyeTop" d="M4 17 Q35 -3 66 17"/>
-              <path id="eyeBot" d="M4 17 Q35 37 66 17"/>
-              <circle class="iris" id="eyeIris" cx="35" cy="17" r="8"/>
-            </svg>
-            <div class="eye-state" id="eyeState">–</div>
-          </div>
-          <div class="metric-value" id="closedVal">0.0<small>초</small></div>
+          <div class="metric-title">눈 감김 시간</div>
+          <div class="eye-box"><svg class="eye" id="eyeIcon" viewBox="0 0 70 34"><path id="eyeTop" d="M4 17 Q35 -3 66 17"/><path d="M4 17 Q35 37 66 17"/><circle class="iris" id="eyeIris" cx="35" cy="17" r="8"/></svg><span id="eyeState">–</span></div>
+          <div class="metric-value num" id="closedVal">0.0<small>초</small></div>
         </div>
-        <div>
-          <div class="bar"><div class="bar-fill" id="closedBar"></div>
-            <div class="mark w" id="mClosed1"><span>1초</span></div>
-            <div class="mark d" id="mClosed2"><span>2초</span></div>
-          </div>
-          <div class="scale"></div>
-        </div>
+        <div><div class="bar"><div class="bar-fill" id="closedBar"></div><div class="mark w" id="mClosed1"><span>1초 주의</span></div><div class="mark d" id="mClosed2"><span>2초 위험</span></div></div><div class="scale"></div></div>
       </div>
-
-      <div class="card metric" id="percCard">
-        <div class="metric-head">
-          <div>
-            <div class="metric-title">졸음 경향 (PERCLOS) <span class="perc-badge" id="percBadge"></span></div>
-            <div class="metric-desc" id="percDesc">최근 30초 중 눈을 감고 있던 시간의 비율</div>
-          </div>
-          <div class="metric-value" id="percVal">0<small>%</small></div>
-        </div>
-        <div>
-          <div class="bar"><div class="bar-fill" id="percBar"></div>
-            <div class="mark w" id="mPerc1"><span>15% 주의</span></div>
-            <div class="mark d" id="mPerc2"><span>30% 위험</span></div>
-          </div>
-          <div class="scale"></div>
-        </div>
-      </div>
-
       <div class="row2">
         <div class="card metric">
           <div class="metric-title">전방 주시</div>
           <div class="head-wrap">
-            <svg class="radar" viewBox="-50 -50 100 100">
-              <circle class="grid" r="46"/><circle class="grid" r="23"/>
-              <line class="grid" x1="-46" y1="0" x2="46" y2="0"/><line class="grid" x1="0" y1="-46" x2="0" y2="46"/>
-              <rect class="zone" id="zone" x="-15" y="-12" width="30" height="24" rx="4"/>
-              <circle class="pt" id="headPt" cx="0" cy="0" r="5"/>
-            </svg>
-            <div class="kv" id="headKv">좌우 <b>–</b><br>상하 <b>–</b></div>
+            <svg class="radar" viewBox="-50 -50 100 100"><circle class="grid" r="46"/><circle class="grid" r="23"/><line class="grid" x1="-46" y1="0" x2="46" y2="0"/><line class="grid" x1="0" y1="-46" x2="0" y2="46"/><rect class="zone" x="-15" y="-12" width="30" height="24" rx="4"/><circle class="pt" id="headPt" r="5"/></svg>
+            <div class="kv">좌우 <b class="num" id="yawVal">–</b><br>상하 <b class="num" id="pitchVal">–</b><br><b id="headState">–</b></div>
           </div>
         </div>
-        <div class="card metric">
+        <div class="card metric" id="handsCard">
           <div class="metric-title">핸들 파지</div>
-          <div class="hands">
-            <svg viewBox="0 0 64 64"><circle class="wheel" cx="32" cy="32" r="26"/><circle class="wheel" cx="32" cy="32" r="6"/><path class="wheel" d="M8 30 L26 32 M56 30 L38 32 M32 38 L32 58"/></svg>
-            <div class="hands-state" id="handsState">–</div>
-          </div>
+          <div class="hands"><svg viewBox="0 0 64 64"><circle class="wheel" cx="32" cy="32" r="26"/><circle class="wheel" cx="32" cy="32" r="6"/><path class="wheel" d="M8 30 L26 32 M56 30 L38 32 M32 38 L32 58"/></svg><div id="handsState">–</div></div>
         </div>
       </div>
     </section>
   </main>
 
-  <footer>
-    <div class="card legend">
-      <div class="legend-item"><span class="badge" style="background:var(--ok)"></span><div><b>정상</b>눈을 뜨고 정면을 보고 있음</div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 한눈 3초<span class="perc-legend"> (졸음 경향 15% → 음성 안내)</span></div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 얼굴 사라짐<span class="perc-legend"> (졸음 경향 30% → 음성 반복)</span></div></div>
+  <section class="bottom">
+    <div class="card chart-card">
+      <div class="chart-head">
+        <div class="metric-title">눈 뜬 정도 <span class="label">최근 30초 · 지금 <b class="num" id="earVal" style="color:var(--text)">–</b></span></div>
+        <div class="legend-mini"><span><i style="background:var(--chart-line)"></i>눈 뜬 정도</span><span><i style="background:var(--warn)"></i>감김 기준</span><span><i style="background:rgba(255,176,32,.5);height:1.2vh"></i>감은 구간</span></div>
+      </div>
+      <canvas id="earChart"></canvas>
     </div>
-    <div class="card log" id="log"><div class="log-title">최근 기록</div></div>
-  </footer>
+    <div class="card stats">
+      <div class="metric-title">이번 운행</div>
+      <div class="stat-grid">
+        <div class="stat"><b class="num" id="statDrive">--:--</b><span>운행 시간</span></div>
+        <div class="stat w"><b class="num" id="statWarn">0</b><span>주의</span></div>
+        <div class="stat d"><b class="num" id="statDanger">0</b><span>위험</span></div>
+        <div class="stat"><b class="num" id="statHands">0</b><span>핸들 이탈</span></div>
+      </div>
+    </div>
+  </section>
 </div>
-
 <div class="lost" id="lost"><div><div class="big">시스템과 연결이 끊어졌습니다</div><div class="small">젯슨 나노 프로그램이 실행 중인지 확인해 주세요 · 자동으로 다시 연결합니다</div></div></div>
-
 <script>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
   // 같은 값을 다시 넣으면 브라우저가 화면을 다시 그리므로, 바뀐 것만 반영 (젯슨 나노 부담 줄이기)
   var cache = {};
-  function setv(id, key, val, fn) { var k = id + "|" + key; if (cache[k] !== val) { cache[k] = val; fn($(id), val); } }
+  function setv(id, key, val, fn) { var el = $(id); if (!el) return; var k = id + "|" + key; if (cache[k] !== val) { cache[k] = val; fn(el, val); } }
   function txt(id, v) { setv(id, "t", v, function (e, x) { e.textContent = x; }); }
   function html(id, v) { setv(id, "h", v, function (e, x) { e.innerHTML = x; }); }
   function css(id, prop, v) { setv(id, "s" + prop, v, function (e, x) { e.style[prop] = x; }); }
   function attr(id, name, v) { setv(id, "a" + name, String(v), function (e, x) { e.setAttribute(name, x); }); }
   function cls(id, v) { setv(id, "c", v, function (e, x) { e.className = x; }); }
   function tog(id, name, on) { setv(id, "g" + name, !!on, function (e, x) { e.classList.toggle(name, x); }); }
+  function cssVar(name) { return getComputedStyle(document.body).getPropertyValue(name).trim(); }
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+
   var ICONS = {
     0: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     1: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6"/><path d="M12 17h.01"/></svg>',
@@ -428,7 +286,6 @@
   var LEVEL_TEXT = { 0: "정상", 1: "주의", 2: "위험" };
   var CAUSE_TEXT = {
     eyes: function (s) { return "눈을 " + s.closed_dur.toFixed(1) + "초째 감고 있어요"; },
-    perclos: function (s) { return "최근 " + Math.round(s.perclos_window) + "초간 눈 감은 비율 " + Math.round(s.perclos * 100) + "%"; },
     offroad: function (s) { return "전방을 " + s.off_dur.toFixed(1) + "초째 보지 않고 있어요"; },
     distract: function (s) { return "최근 " + Math.round(s.vats_window) + "초간 한눈판 시간 " + Math.round(s.vats) + "초"; },
     noface: function () { return "운전자 얼굴이 보이지 않아요"; }
@@ -437,56 +294,129 @@
 
   var lastEvent = 0, failCount = 0, lastIcon = null;
 
-  // 시계
+  // ── 최근 기록 (그래프·타임라인·이번 운행 통계용, 브라우저 안에서만 계산) ──
+  var hist = [];                       // {t, lv, ear, thr, closed}
+  var HIST_SEC = 60;
+  var stat = { start: null, warn: 0, danger: 0, hands: 0, prevLv: 0, prevHands: false, wasCal: false };
+
   function tick() {
     var d = new Date();
-    var p = function (n) { return (n < 10 ? "0" : "") + n; };
-    $("clock").textContent = p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    txt("clock", p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()));
+    if ($("dateText")) txt("dateText", (d.getMonth() + 1) + "월 " + d.getDate() + "일 " + "일월화수목금토"[d.getDay()] + "요일");
+    if (stat.start) {
+      var sec = Math.floor((Date.now() - stat.start) / 1000);
+      txt("statDrive", p2(Math.floor(sec / 60)) + ":" + p2(sec % 60));
+    } else {
+      txt("statDrive", "--:--");
+    }
   }
   setInterval(tick, 1000); tick();
 
-  // 영상 (끊기면 다시 연결)
   var video = $("video");
   function connectVideo() { video.src = "/stream.mjpg?t=" + Date.now(); }
   video.onerror = function () { setTimeout(connectVideo, 2000); };
   connectVideo();
 
-  function setMark(el, ratio) { el.style.left = (Math.min(Math.max(ratio, 0), 1) * 100) + "%"; }
+  function setMark(id, ratio) { css(id, "left", (Math.min(Math.max(ratio, 0), 1) * 100) + "%"); }
   function pct(x) { return (Math.min(Math.max(x, 0), 1) * 100) + "%"; }
+
+  // ── 캔버스: 눈 뜬 정도 그래프 ──
+  function fitCanvas(c) {
+    var r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    var w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    return dpr;
+  }
+  function drawEarChart() {
+    var c = $("earChart"); if (!c) return;
+    var dpr = fitCanvas(c), ctx = c.getContext("2d"), W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+    var now = Date.now() / 1000, span = 30;
+    var pts = hist.filter(function (p) { return p.t >= now - span && p.ear > 0; });
+    var thr = 0, top = 0.3;
+    pts.forEach(function (p) { if (p.thr) thr = p.thr; top = Math.max(top, p.ear); });
+    var ymin = 0, ymax = top * 1.15;
+    function X(t) { return (t - (now - span)) / span * W; }
+    function Y(v) { return H - (v - ymin) / (ymax - ymin) * H; }
+    // 눈 감긴 구간 음영
+    ctx.fillStyle = cssVar("--chart-closed") || "rgba(255,176,32,.18)";
+    for (var i = 1; i < pts.length; i++) if (pts[i].closed) ctx.fillRect(X(pts[i - 1].t), 0, Math.max(1, X(pts[i].t) - X(pts[i - 1].t)), H);
+    // 기준선
+    if (thr) {
+      ctx.strokeStyle = cssVar("--warn"); ctx.lineWidth = 1.5 * dpr; ctx.setLineDash([6 * dpr, 5 * dpr]);
+      ctx.beginPath(); ctx.moveTo(0, Y(thr)); ctx.lineTo(W, Y(thr)); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // 선
+    ctx.strokeStyle = cssVar("--chart-line") || cssVar("--accent"); ctx.lineWidth = 2.4 * dpr; ctx.lineJoin = "round";
+    ctx.beginPath();
+    pts.forEach(function (p, k) { var x = X(p.t), y = Y(p.ear); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+    ctx.stroke();
+  }
+  // ── 캔버스: 최근 60초 상태 타임라인 ──
+  function drawTimeline() {
+    var c = $("timeline"); if (!c) return;
+    fitCanvas(c);
+    var ctx = c.getContext("2d"), W = c.width, H = c.height, now = Date.now() / 1000;
+    ctx.fillStyle = cssVar("--track"); ctx.fillRect(0, 0, W, H);
+    var col = { 0: cssVar("--ok"), 1: cssVar("--warn"), 2: cssVar("--danger"), c: cssVar("--accent"), p: cssVar("--muted") };
+    for (var i = 1; i < hist.length; i++) {
+      var a = hist[i - 1], b = hist[i];
+      if (b.t < now - HIST_SEC) continue;
+      ctx.fillStyle = col[b.lv] || col[0];
+      ctx.globalAlpha = b.lv === 0 ? 0.55 : 1;
+      var x0 = (Math.max(a.t, now - HIST_SEC) - (now - HIST_SEC)) / HIST_SEC * W, x1 = (b.t - (now - HIST_SEC)) / HIST_SEC * W;
+      ctx.fillRect(x0, 0, Math.max(1, x1 - x0 + 0.5), H);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // ── 눈 감김 원형 게이지 (있는 화면만) ──
+  function drawClosedRing(s) {
+    if (!$("closedArc")) return;
+    var max = s.eye_lv2_sec * 1.5, f = Math.min(s.closed_dur / max, 1);
+    var L = 2 * Math.PI * 80 * 0.75;              // 270도 호
+    css("closedArc", "strokeDashoffset", (L * (1 - f)).toFixed(1));
+    css("closedArc", "stroke", s.closed_dur >= s.eye_lv2_sec ? "var(--danger)" : s.closed_dur >= s.eye_lv1_sec ? "var(--warn)" : "var(--accent)");
+  }
 
   function render(s) {
     var level = s.calibrated ? s.level : 0;
-    var searching = s.calibrated && !s.face && level === 0;     // 얼굴을 잠깐 놓친 상태
+    var searching = s.calibrated && !s.face && level === 0;
     var paused = !!s.paused;
-    attr("pageBody", "data-level", paused ? "paused" : (s.calibrated && !searching ? String(level) : "calib"));
+    var lvKey = paused ? "paused" : (s.calibrated && !searching ? String(level) : "calib");
+    attr("pageBody", "data-level", lvKey);
     tog("pauseOverlay", "show", paused);
 
-    // 상태 카드
+    // 이번 운행 통계: 측정이 끝난 순간부터 (재측정하면 새로 시작)
+    if (s.calibrated && !stat.wasCal) { stat.start = Date.now(); stat.warn = stat.danger = stat.hands = 0; stat.prevLv = 0; }
+    stat.wasCal = s.calibrated;
+    if (s.calibrated && !paused) {
+      if (level >= 1 && stat.prevLv < 1) stat.warn++;
+      if (level >= 2 && stat.prevLv < 2) stat.danger++;
+      if (s.hands_off && !stat.prevHands) stat.hands++;
+    }
+    stat.prevLv = level; stat.prevHands = !!s.hands_off;
+    txt("statWarn", String(stat.warn)); txt("statDanger", String(stat.danger)); txt("statHands", String(stat.hands));
+
+    hist.push({ t: Date.now() / 1000, lv: paused ? "p" : (!s.calibrated ? "c" : level), ear: s.face ? s.ear : 0, thr: s.thr, closed: !!(s.face && s.closed) });
+    while (hist.length && hist[0].t < Date.now() / 1000 - HIST_SEC - 2) hist.shift();
+
     var iconKey = paused ? "pause" : (s.calibrated && !searching ? level : "wait");
     if (iconKey !== lastIcon) { html("statusIcon", ICONS[iconKey]); lastIcon = iconKey; }
-    if (paused) {
-      txt("statusText", "일시정지");
-      txt("statusCause", "S 키를 누르면 다시 시작해요");
-    } else if (!s.calibrated) {
-      txt("statusText", "준비 중");
-      txt("statusCause", "운전자 기준 측정 중");
-    } else if (searching) {
-      txt("statusText", "확인 중");
-      txt("statusCause", "운전자 얼굴을 찾고 있어요");
-    } else {
+    if (paused) { txt("statusText", "일시정지"); txt("statusCause", "S 키를 누르면 다시 시작해요"); }
+    else if (!s.calibrated) { txt("statusText", "준비 중"); txt("statusCause", "운전자 기준 측정 중"); }
+    else if (searching) { txt("statusText", "확인 중"); txt("statusCause", "운전자 얼굴을 찾고 있어요"); }
+    else {
       txt("statusText", LEVEL_TEXT[level]);
-      var causes = (s.causes || []).map(function (c) { return CAUSE_TEXT[c] ? CAUSE_TEXT[c](s) : c; });
-      txt("statusCause", level === 0 ? (s.face ? "안전하게 운전 중이에요" : "얼굴을 찾는 중") : (causes.join(" · ") || " "));
+      var causes = (s.causes || []).map(function (c) { return CAUSE_TEXT[c] ? CAUSE_TEXT[c](s) : null; }).filter(Boolean);
+      txt("statusCause", level === 0 ? "안전하게 운전 중이에요" : (causes.join(" · ") || " "));
     }
 
-    // 시스템 칩
-    var bt = $("btDot");
-    bt.className = "dot " + (s.sim ? "sim" : (s.bt ? "on" : "off"));
-    txt("btText", s.sim ? "시뮬레이션 모드" : (s.bt ? "경고 장치 연결됨" : "경고 장치 연결 끊김"));
-    txt("camFps", Math.round(s.cam_fps || s.fps || 0));
-    txt("procMs", Math.round(s.proc_ms || 0));
+    cls("btDot", "dot " + (s.sim ? "sim" : (s.bt ? "on" : "off")));
+    txt("btText", s.sim ? "시뮬레이션" : (s.bt ? "경고 장치 연결" : "경고 장치 끊김"));
+    txt("camFps", String(Math.round(s.cam_fps || s.fps || 0)));
+    txt("procMs", String(Math.round(s.proc_ms || 0)));
 
-    // 캘리브레이션 안내: 인사 → 카운트다운 → 깜빡임(또는 뜨기/감기) → 측정 완료
+    // 캘리브레이션 안내
     var doneShow = s.calibrated && s.face && s.calib_done_ago != null && s.calib_done_ago < (s.calib_done_show || 2);
     var calib = (!s.calibrated && s.face) || doneShow;
     var mode = doneShow ? "done" : s.calib_phase;
@@ -496,137 +426,98 @@
     css("calibRing", "display", (mode === "intro" || mode === "done") ? "none" : "");
     tog("blinkDots", "show", calib && mode === "blink");
     tog("calibSmall", "calib-warn", calib && mode === "blink" && !!s.calib_msg);
-    if (calib && mode === "intro") {
-      txt("calibBig", "안녕하세요!");
-      txt("calibSmall", "졸음운전 방지 시스템을 시작합니다");
-    } else if (calib && mode === "done") {
-      txt("calibBig", "측정 완료!");
-      txt("calibSmall", "안전 운전하세요");
-    } else if (calib && mode === "ready") {
-      var target0 = s.blink_target || 5;
+    if (calib && mode === "intro") { txt("calibBig", "안녕하세요!"); txt("calibSmall", "졸음운전 방지 시스템을 시작합니다"); }
+    else if (calib && mode === "done") { txt("calibBig", "측정 완료!"); txt("calibSmall", "안전 운전하세요"); }
+    else if (calib && mode === "ready") {
       txt("calibBig", "카메라를 정면으로 봐 주세요");
-      txt("calibSmall", s.calib_mode === "blink"
-        ? "곧 눈 깜빡임 측정을 시작해요 · 천천히 " + target0 + "번"
-        : "곧 측정을 시작해요");
+      txt("calibSmall", s.calib_mode === "blink" ? "곧 눈 깜빡임 측정을 시작해요 · 천천히 " + (s.blink_target || 5) + "번" : "곧 측정을 시작해요");
       css("ringFg", "stroke", "var(--accent)");
       css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(s.calib_ready_sec || 3, 0.01))).toFixed(1));
       txt("ringText", String(Math.max(1, Math.ceil(s.calib_rem))));
     } else if (calib && mode === "blink") {
-      // 깜빡임 캘리브레이션: 원 = 남은 시간, 가운데 = 잡힌 깜빡임 수, 아래 점 = 목표 횟수
       var target = s.blink_target || 5, n = Math.min(s.blink_count || 0, target);
       txt("calibBig", "정면을 보고 천천히 " + target + "번 깜빡여 주세요");
       txt("calibSmall", s.calib_msg || ("꾹 감았다가 떠 주세요 · 남은 시간 " + Math.ceil(s.calib_rem) + "초"));
       css("ringFg", "stroke", n >= target ? "var(--ok)" : "var(--accent)");
       css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(s.calib_blink_sec, 0.01))).toFixed(1));
       txt("ringText", n + "/" + target);
-      var dots = "";
-      for (var i = 0; i < target; i++) dots += '<i class="' + (i < n ? "on" : "") + '"></i>';
+      var dots = ""; for (var i = 0; i < target; i++) dots += '<i class="' + (i < n ? "on" : "") + '"></i>';
       html("blinkDots", dots);
     } else if (calib) {
-      var closedPhase = mode === "closed";
-      var dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
+      var closedPhase = mode === "closed", dur = closedPhase ? s.calib_closed_sec : s.calib_open_sec;
       cls("stepOpen", "step " + (closedPhase ? "done" : "active"));
       cls("stepClosed", "step " + (closedPhase ? "active" : ""));
       txt("calibBig", closedPhase ? "눈을 편하게 감아 주세요" : "정면을 보고 눈을 떠 주세요");
       txt("calibSmall", closedPhase ? "감은 눈의 기준을 측정합니다" : "운전자마다 눈 크기가 달라서, 먼저 기준을 측정합니다");
       css("ringFg", "stroke", closedPhase ? "var(--warn)" : "var(--accent)");
       css("ringFg", "strokeDashoffset", (326.7 * (1 - s.calib_rem / Math.max(dur, 0.01))).toFixed(1));
-      txt("ringText", Math.ceil(s.calib_rem));
+      txt("ringText", String(Math.ceil(s.calib_rem)));
     }
     tog("faceOverlay", "show", !s.face && !paused);
-    if (!s.face) {
-      txt("faceSmall", s.calibrated && s.missing_sec > 0
-        ? "얼굴이 " + s.missing_sec.toFixed(0) + "초째 보이지 않아요 (" + s.face_missing_sec.toFixed(0) + "초면 위험)"
-        : "카메라 정면에 앉아 주세요");
-    }
+    if (!s.face) txt("faceSmall", s.calibrated && s.missing_sec > 0
+      ? "얼굴이 " + s.missing_sec.toFixed(0) + "초째 보이지 않아요 (" + s.face_missing_sec.toFixed(0) + "초면 위험)"
+      : "카메라 정면에 앉아 주세요");
 
     // 얼굴 상자
-    var fg = $("faceG");
     if (s.face_box && s.calibrated) {
       var b = s.face_box, q = function (v) { return Math.round(v * 1000) / 10; };
-      var x = q(b[0]), y = q(b[1]), w = q(b[2] - b[0]), h = q(b[3] - b[1]);
-      var r = $("faceRect");
-      r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", w); r.setAttribute("height", h);
-      var cw = w * 0.18, ch = h * 0.18;
-      $("faceCorners").setAttribute("d",
-        "M" + x + " " + (y + ch) + "V" + y + "H" + (x + cw) +
-        "M" + (x + w - cw) + " " + y + "H" + (x + w) + "V" + (y + ch) +
-        "M" + (x + w) + " " + (y + h - ch) + "V" + (y + h) + "H" + (x + w - cw) +
-        "M" + (x + cw) + " " + (y + h) + "H" + x + "V" + (y + h - ch));
+      var x = q(b[0]), y = q(b[1]), w = q(b[2] - b[0]), h = q(b[3] - b[1]), cw = w * 0.18, ch = h * 0.18;
+      attr("faceCorners", "d",
+        "M" + x + " " + (y + ch) + "V" + y + "H" + (x + cw) + "M" + (x + w - cw) + " " + y + "H" + (x + w) + "V" + (y + ch) +
+        "M" + (x + w) + " " + (y + h - ch) + "V" + (y + h) + "H" + (x + w - cw) + "M" + (x + cw) + " " + (y + h) + "H" + x + "V" + (y + h - ch));
       css("faceG", "display", "");
-    } else {
-      css("faceG", "display", "none");
-    }
+    } else css("faceG", "display", "none");
 
-    // 눈 감김 시간
+    // 눈 감김
     var maxClosed = s.eye_lv2_sec * 1.5;
-    setMark($("mClosed1"), s.eye_lv1_sec / maxClosed);
-    setMark($("mClosed2"), s.eye_lv2_sec / maxClosed);
+    setMark("mClosed1", s.eye_lv1_sec / maxClosed); setMark("mClosed2", s.eye_lv2_sec / maxClosed);
     html("closedVal", s.closed_dur.toFixed(1) + "<small>초</small>");
-    var cb = $("closedBar");
-    cb.style.width = pct(s.closed_dur / maxClosed);
-    cb.style.background = s.closed_dur >= s.eye_lv2_sec ? "var(--danger)" : s.closed_dur >= s.eye_lv1_sec ? "var(--warn)" : "var(--accent)";
+    css("closedBar", "width", pct(s.closed_dur / maxClosed));
+    css("closedBar", "background", s.closed_dur >= s.eye_lv2_sec ? "var(--danger)" : s.closed_dur >= s.eye_lv1_sec ? "var(--warn)" : "var(--accent)");
+    drawClosedRing(s);
     var closed = s.face && s.closed;
-    css("eyeIris", "opacity", closed ? 0 : 1);
-    setv("eyeBox", "o", s.face, function () { document.querySelector(".eye").style.opacity = s.face ? 1 : 0.3; });
+    css("eyeIris", "opacity", closed ? "0" : "1");
+    css("eyeIcon", "opacity", s.face ? "1" : "0.3");
     attr("eyeTop", "d", closed ? "M4 17 Q35 25 66 17" : "M4 17 Q35 -3 66 17");
     txt("eyeState", !s.face ? "–" : (closed ? "눈 감음" : "눈 뜸"));
-    css("eyeState", "color", closed ? "var(--warn)" : "var(--text)");
+    tog("eyeState", "is-closed", closed);
+    txt("earVal", s.face && s.calibrated && s.baseline ? Math.round(Math.min(s.ear / s.baseline, 1.2) * 100) + "%" : "–");
 
-    // PERCLOS
-    var maxP = Math.max(s.perclos_lv2 * 1.5, 0.3);
-    setMark($("mPerc1"), s.perclos_lv1 / maxP);
-    setMark($("mPerc2"), s.perclos_lv2 / maxP);
-    $("mPerc1").firstChild.textContent = Math.round(s.perclos_lv1 * 100) + "% 주의";
-    $("mPerc2").firstChild.textContent = Math.round(s.perclos_lv2 * 100) + "% 위험";
-    txt("percDesc", "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율");
-    html("percVal", Math.round(s.perclos * 100) + "<small>%</small>");
-    tog("pageBody", "no-perclos", s.perclos_enabled === false);
-    var plv = s.perclos_level || 0;
-    cls("percBadge", "perc-badge" + (plv ? " lv" + plv : ""));
-    txt("percBadge", plv === 2 ? "2단계 · 위험" : plv === 1 ? "1단계 · 주의" : "");
-    cls("percCard", "card metric" + (plv ? " lv" + plv : ""));
-    var pb = $("percBar");
-    pb.style.width = pct(s.perclos / maxP);
-    pb.style.background = s.perclos >= s.perclos_lv2 ? "var(--danger)" : s.perclos >= s.perclos_lv1 ? "var(--warn)" : "var(--accent)";
-
-    // 머리 방향 (정면 대비, ±60도 → 반지름 46)
-    var pt = $("headPt");
+    // 머리 방향
     if (s.head) {
-      var px = Math.max(-46, Math.min(46, s.yaw / 60 * 46));
-      var py = Math.max(-46, Math.min(46, -s.pitch / 60 * 46));
-      pt.setAttribute("cx", px.toFixed(1)); pt.setAttribute("cy", py.toFixed(1));
+      attr("headPt", "cx", Math.max(-46, Math.min(46, s.yaw / 60 * 46)).toFixed(1));
+      attr("headPt", "cy", Math.max(-46, Math.min(46, -s.pitch / 60 * 46)).toFixed(1));
       css("headPt", "display", "");
       attr("headPt", "class", "pt" + (s.off_road ? " out" : ""));
-      html("headKv", "좌우 <b>" + (s.yaw > 0 ? "+" : "") + Math.round(s.yaw) + "°</b><br>상하 <b>" + (s.pitch > 0 ? "+" : "") + Math.round(s.pitch) + "°</b><br>" +
-        (s.off_road ? "<b style='color:var(--warn)'>전방 이탈 " + s.off_dur.toFixed(1) + "초</b>" : "<b style='color:var(--ok)'>전방 주시 중</b>"));
+      txt("yawVal", (s.yaw > 0 ? "+" : "") + Math.round(s.yaw) + "°");
+      txt("pitchVal", (s.pitch > 0 ? "+" : "") + Math.round(s.pitch) + "°");
+      txt("headState", s.off_road ? "전방 이탈 " + s.off_dur.toFixed(1) + "초" : "전방 주시 중");
+      tog("headState", "is-bad", s.off_road);
     } else {
-      css("headPt", "display", "none");
-      html("headKv", "좌우 <b>–</b><br>상하 <b>–</b>");
+      css("headPt", "display", "none"); txt("yawVal", "–"); txt("pitchVal", "–"); txt("headState", "–"); tog("headState", "is-bad", false);
     }
 
     // 핸들
-    var hs = $("handsState");
-    if (s.sim || !s.bt) { hs.textContent = "센서 미연결"; hs.style.color = "var(--muted)"; }
-    else if (s.hands_off) { hs.textContent = "손을 뗌"; hs.style.color = "var(--danger)"; }
-    else { hs.textContent = "잡고 있음"; hs.style.color = "var(--ok)"; }
+    var hk = (s.sim || !s.bt) ? "na" : (s.hands_off ? "off" : "on");
+    txt("handsState", hk === "na" ? "센서 미연결" : hk === "off" ? "손을 뗌" : "잡고 있음");
+    attr("handsCard", "data-hands", hk);
     tog("handsBanner", "show", !!s.hands_off);
+
+    drawEarChart(); drawTimeline();
   }
 
   function addEvents(events) {
-    var log = $("log");
+    var log = $("log"); if (!log) { events.forEach(function (e) { lastEvent = Math.max(lastEvent, e.no); }); return; }
     events.forEach(function (e) {
       lastEvent = Math.max(lastEvent, e.no);
-      var d = new Date(e.t * 1000);
-      var p = function (n) { return (n < 10 ? "0" : "") + n; };
-      var item = document.createElement("div");
+      var d = new Date(e.t * 1000), item = document.createElement("div");
       item.className = "log-item";
-      item.innerHTML = '<span class="badge" style="background:' + (LOG_COLOR[e.kind] || "var(--muted)") + '"></span>' +
-        "<time>" + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "</time><span></span>";
+      item.innerHTML = '<span class="badge" style="background:' + (LOG_COLOR[e.kind] || "var(--muted)") + '"></span><time>' +
+        p2(d.getHours()) + ":" + p2(d.getMinutes()) + "</time><span></span>";
       item.lastChild.textContent = e.text;
-      log.insertBefore(item, log.children[1] || null);
+      log.insertBefore(item, log.firstChild);
     });
-    while (log.children.length > 6) log.removeChild(log.lastChild);
+    while (log.children.length > (+log.dataset.max || 4)) log.removeChild(log.lastChild);
   }
 
   function poll() {
@@ -639,51 +530,26 @@
         var s = JSON.parse(xhr.responseText);
         if (s.events && s.events.length) addEvents(s.events);
         if (s.ready) render(s);
-      } else { fail(); }
+      } else fail();
       setTimeout(poll, 200);
     };
     xhr.onerror = xhr.ontimeout = function () { fail(); setTimeout(poll, 1000); };
     xhr.send();
   }
-  function fail() {
-    failCount++;
-    if (failCount >= 3) $("lost").classList.add("show");
-  }
+  function fail() { failCount++; if (failCount >= 3) $("lost").classList.add("show"); }
   poll();
 
-  // 터치스크린(?touch=1): 재측정 버튼 → 프로그램에 R 키와 같은 명령
   if (/[?&]touch=1/.test(location.search)) {
     document.body.classList.add("touch");
-    var btn = $("recalBtn");
-    function press(e) {
-      if (e && e.cancelable) e.preventDefault();  // 터치 후 따라오는 click과 두 번 처리되지 않게
-      if (btn.disabled) return;
-      btn.disabled = true;                       // 연달아 눌러도 한 번만
-      $("recalText").textContent = "재측정 시작!";
-      var x = new XMLHttpRequest();
-      x.open("POST", "/api/key?k=r");
-      x.onloadend = function () {
-        if (x.status !== 200) $("recalText").textContent = "연결 안 됨";
-        setTimeout(function () { btn.disabled = false; $("recalText").textContent = "재측정"; }, 3000);
-      };
-      x.send();
-    }
-    // 터치스크린 브라우저에 따라 터치가 click으로 안 바뀌는 경우가 있어 터치·클릭 둘 다 받음
-    btn.addEventListener("touchend", press);
-    btn.addEventListener("click", press);
-    document.addEventListener("contextmenu", function (e) { e.preventDefault(); });   // 길게 누르기 메뉴 막기
+    document.addEventListener("contextmenu", function (e) { e.preventDefault(); });
   }
-
-  // 키보드 포커스가 이 화면에 있어도 r(재캘리브레이션) / b(알림음 테스트) / q(종료)가 프로그램에 전달되게
+  // 키보드: r 재측정 / s 일시정지 / b 알림음 테스트 / q 종료
   document.addEventListener("keydown", function (e) {
     var k = (e.key || "").toLowerCase();
-    if (k === "r" || k === "b" || k === "q" || k === "s") {
-      var x = new XMLHttpRequest();
-      x.open("POST", "/api/key?k=" + k);
-      x.send();
-    }
+    if (k === "r" || k === "b" || k === "q" || k === "s") { var x = new XMLHttpRequest(); x.open("POST", "/api/key?k=" + k); x.send(); }
   });
 })();
+
 </script>
 </body>
 </html>
