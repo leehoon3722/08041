@@ -40,7 +40,7 @@
   LV1: 낮은 음 '삑-삑' 반복, LV2: 높은 음 빠른 연속음, OFF가 되면 바로 멈춤
 
 [카메라]
-  USB 웹캠 (V4L2, /dev/video1, 640×480 MJPG 30fps 요청 → 실제 값은 실행 시 출력)
+  USB 웹캠 (V4L2, /dev/video0, 640×480 MJPG 30fps 요청 → 실제 값은 실행 시 출력)
   · 적외선 카메라가 아니므로 어두운 곳(야간·터널)에선 얼굴 검출이 안 될 수 있음
 
 [프레임 처리]
@@ -82,7 +82,7 @@ except ImportError:
 # ══════════════════════════════════════════
 
 # USB 웹캠
-CAM_INDEX    = 0        # /dev/video1 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
+CAM_INDEX    = 0        # /dev/video0 (웹캠). 다른 번호면 v4l2-ctl --list-devices 로 확인
 CAM_WIDTH    = 640
 CAM_HEIGHT   = 480
 FPS_TARGET   = 30
@@ -2061,7 +2061,9 @@ class WebUI:
         @app.route("/")
         def index():
             with open(self.html_path, "rb") as f:
-                return Response(f.read(), mimetype="text/html; charset=utf-8")
+                # 캐시 금지 — html 파일을 바꾸면 브라우저가 예전 화면을 쓰지 않고 바로 새 화면을 받게
+                return Response(f.read(), mimetype="text/html; charset=utf-8",
+                                headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
         @app.route("/stream.mjpg")
         def stream():
