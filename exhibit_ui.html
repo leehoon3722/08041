@@ -175,6 +175,13 @@
   .metric { padding: 1.8vh 1.6vw 1.2vh; display: flex; flex-direction: column; gap: 1.2vh; min-height: 0; }
   .metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
   .metric-title { font-size: 2vh; font-weight: 700; }
+  /* 졸음 경향은 운전자 상태(ESP32 단계)와 따로 — 카드 자체에 단계 표시 */
+  .perc-badge { display: none; margin-left: 0.6vw; padding: 0.3vh 0.8vw; border-radius: 999px;
+                font-size: 1.5vh; font-weight: 800; color: #111; vertical-align: middle; }
+  .perc-badge.lv1 { display: inline-block; background: var(--warn); }
+  .perc-badge.lv2 { display: inline-block; background: var(--danger); color: #fff; }
+  #percCard.lv1 { border-color: rgba(255, 176, 32, .7); }
+  #percCard.lv2 { border-color: rgba(255, 77, 79, .8); }
   .metric-desc { font-size: 1.45vh; color: var(--muted); margin-top: 0.3vh; }
   .metric-value { font-size: 4.2vh; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .metric-value small { font-size: 0.45em; color: var(--muted); font-weight: 600; margin-left: 0.2em; }
@@ -342,10 +349,10 @@
         </div>
       </div>
 
-      <div class="card metric">
+      <div class="card metric" id="percCard">
         <div class="metric-head">
           <div>
-            <div class="metric-title">졸음 경향 (PERCLOS)</div>
+            <div class="metric-title">졸음 경향 (PERCLOS) <span class="perc-badge" id="percBadge"></span></div>
             <div class="metric-desc" id="percDesc">최근 30초 중 눈을 감고 있던 시간의 비율</div>
           </div>
           <div class="metric-value" id="percVal">0<small>%</small></div>
@@ -386,8 +393,8 @@
   <footer>
     <div class="card legend">
       <div class="legend-item"><span class="badge" style="background:var(--ok)"></span><div><b>정상</b>눈을 뜨고 정면을 보고 있음</div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 졸음 경향 15% · 한눈 3초</div></div>
-      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 졸음 경향 30% · 얼굴 사라짐</div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--warn)"></span><div><b>주의</b>눈 1초 감김 · 한눈 3초 (졸음 경향 15% → 음성 안내)</div></div>
+      <div class="legend-item"><span class="badge" style="background:var(--danger)"></span><div><b>위험</b>눈 2초 감김 · 얼굴 사라짐 (졸음 경향 30% → 음성 반복)</div></div>
     </div>
     <div class="card log" id="log"><div class="log-title">최근 기록</div></div>
   </footer>
@@ -571,6 +578,10 @@
     $("mPerc2").firstChild.textContent = Math.round(s.perclos_lv2 * 100) + "% 위험";
     txt("percDesc", "최근 " + Math.round(s.perclos_window) + "초 중 눈을 감고 있던 시간의 비율");
     html("percVal", Math.round(s.perclos * 100) + "<small>%</small>");
+    var plv = s.perclos_level || 0;
+    cls("percBadge", "perc-badge" + (plv ? " lv" + plv : ""));
+    txt("percBadge", plv === 2 ? "2단계 · 위험" : plv === 1 ? "1단계 · 주의" : "");
+    cls("percCard", "card metric" + (plv ? " lv" + plv : ""));
     var pb = $("percBar");
     pb.style.width = pct(s.perclos / maxP);
     pb.style.background = s.perclos >= s.perclos_lv2 ? "var(--danger)" : s.perclos >= s.perclos_lv1 ? "var(--warn)" : "var(--accent)";
